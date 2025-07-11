@@ -371,7 +371,7 @@ class AIVABot:
             await update.message.reply_text("✅ Number added to watchlist successfully!")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming messages and detect numbers."""
+        logger.info(f"handle_message: chat_id={update.effective_chat.id if update.effective_chat else None}, chat_type={update.effective_chat.type if update.effective_chat else None}, text={update.message.text if update.message else None}")
         if not update.message or not update.message.text:
             return
             
@@ -518,7 +518,7 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
         await self.process_number(number, message, context.bot)
 
     async def process_number(self, number: str, message, bot):
-        """Process a single number and check for duplicates."""
+        logger.info(f"process_number: number={number}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
         try:
             with get_db() as db:
                 # First check if this exact number already exists as a non-duplicate
@@ -529,6 +529,7 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 if existing:
                     # Found a match - handle as duplicate
+                    logger.info(f"Duplicate found for number={number} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
                     await self.handle_duplicate(existing, number, message, bot, db)
                     return True
                     
@@ -557,7 +558,7 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
             return False
 
     async def handle_duplicate(self, existing_record, number: str, message, bot, db):
-        """Handle a detected duplicate number."""
+        logger.info(f"handle_duplicate: number={number}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
         try:
             # Create a new record marking it as a duplicate
             duplicate_record = NumberRecord(
@@ -601,7 +602,7 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
                     parse_mode='Markdown',
                     reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None
                 )
-                logger.info(f"Sent duplicate alert for number: {number}")
+                logger.info(f"Alert sent for duplicate: {number} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
                 
             except Exception as e:
                 logger.error(f"Failed to send alert as reply, trying direct message: {e}")
@@ -614,6 +615,7 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
                             text=alert_text,
                             parse_mode='Markdown'
                         )
+                        logger.info(f"Alert sent for duplicate (fallback): {number} in chat_id={chat_id}")
                 except Exception as e2:
                     logger.error(f"Failed to send duplicate alert: {e2}")
                     
