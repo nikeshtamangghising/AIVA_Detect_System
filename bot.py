@@ -1,0 +1,358 @@
+import logging
+import os
+import asyncio
+import aiohttp
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
+import re
+
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    filters, ContextTypes, JobQueue
+)
+from config import settings
+from database.database import init_db, get_db
+from database.models import PhoneRecord, DuplicateAlert
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=settings.LOG_LEVEL
+)
+logger = logging.getLogger(__name__)
+
+# No pattern validation needed as per requirements
+
+class AIVABot:
+    def __init__(self):
+        """Initialize the bot."""
+        self.application = Application.builder().token(settings.BOT_TOKEN).build()
+        self.start_time = datetime.now()
+        self.self_ping_url = getattr(settings, 'SELF_PING_URL', None)
+        self.setup_handlers()
+        self.setup_commands()
+        
+        # Schedule self-ping job if URL is provided
+        if self.self_ping_url:
+            self.application.job_queue.run_repeating(
+                self.self_ping,
+                interval=timedelta(minutes=25),  # Ping every 25 minutes (under 30 min free tier limit)
+                first=10  # Start after 10 seconds
+            )
+        
+    def setup_handlers(self):
+        """Setup all command and message handlers."""
+        # Command handlers
+        self.application.add_handler(CommandHandler("start", self.start))
+        self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("status", self.status))
+        
+        # Admin commands
+        self.application.add_handler(CommandHandler("add_phone", self.add_phone))
+        self.application.add_handler(CommandHandler("list_data", self.list_data))
+        
+        # Message handler for phone number detection
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, 
+            self.handle_message
+        ))
+        
+        # Error handler
+        self.application.add_error_handler(self.error_handler)
+    
+    def setup_commands(self):
+        """Setup bot commands for the menu."""
+        commands = [
+            ("start", "Start the bot"),
+            ("help", "Show help information"),
+            ("add_phone", "Add phone number to watchlist"),
+            ("list_data", "List all watched phone numbers"),
+        ]
+        
+        # Set commands using set_my_commands
+        async def set_commands():
+            await self.application.bot.set_my_commands(
+                [("/" + cmd, desc) for cmd, desc in commands]
+            )
+        
+        self.application.job_queue.run_once(lambda _: set_commands(), 0)
+    
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send a welcome message when the command /start is issued."""
+        user = update.effective_user
+        await update.message.reply_text(
+            f'Hi {user.first_name}! I am AIVA Detect System.\n\n'
+            'I help detect and prevent duplicate payments in your groups.\n\n'
+            'Add me to your group and I will start monitoring for duplicate payments.\n\n'
+            'Use /help to see all available commands.'
+        )
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send a message when the command /help is issued."""
+        help_text = (
+            "🤖 *AIVA Detect System* 🤖\n\n"
+            "*Available Commands:*\n"
+            "• /start - Start the bot and see welcome message\n"
+            "• /help - Show this help message\n"
+            "• /status - Show bot status and uptime\n\n"
+            "*Admin Commands:*\n"
+            "• /add_phone <number> - Add phone number to watchlist\n"
+            "• /list_data - List all watched phone numbers\n\n"
+            "*How It Works:*\n"
+            "1. Add me to your group\n"
+            "2. I'll automatically detect phone numbers in messages\n"
+            "3. If a duplicate number is found, I'll notify the group"
+        )
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    
+    async def new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle new chat members event."""
+        for member in update.message.new_chat_members:
+            if member.id == context.bot.id:
+                # Bot was added to a group
+                chat = update.effective_chat
+                await self.handle_bot_added(chat, context.bot)
+                break
+    
+    async def handle_bot_added(self, chat, bot):
+        """Handle the event when bot is added to a group."""
+        # Send welcome message to the group
+        welcome_text = (
+            "👋 *Welcome to AIVA Detect System!*\n\n"
+            "I'll help you detect and prevent duplicate payments in this group.\n\n"
+            "*How to use:*\n"
+            "• Just send payment details in the group\n"
+            "• I'll automatically detect duplicates\n"
+            "• I'll notify you if a potential duplicate is found\n\n"
+            "*Note:* Only group admins can manage my settings."
+        )
+        await bot.send_message(
+            chat_id=chat.id,
+            text=welcome_text,
+            parse_mode='Markdown'
+        )
+        
+        # Send private message to admins
+        admins = await chat.get_administrators()
+        for admin in admins:
+            try:
+                admin_text = (
+                    f"👋 Hello! I've been added to *{chat.title}*.\n\n"
+                    "*Admin Controls:*\n"
+                    "• Use /add_phone to add phone numbers to watchlist\n"
+                    "• Use /add_account to add bank accounts\n"
+                    "• Use /list_data to view all watched items\n\n"
+                    "I'll notify this group if I detect any duplicate payments."
+                )
+                await bot.send_message(
+                    chat_id=admin.user.id,
+                    text=admin_text,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Failed to send admin message: {e}")
+    
+    # Payment detection and database methods will be added here
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming messages and detect phone numbers."""
+        message = update.message
+        if not message or not message.text:
+            return
+            
+        # Extract phone number from message
+        phone = message.text.strip()
+        if not phone:
+            return
+            
+        # Process the phone number
+        await self.process_phone_number(phone, message, context.bot)
+    
+    async def process_phone_number(self, phone: str, message, bot):
+        """Process a single phone number and check for duplicates."""
+        with get_db() as db:
+            # Check if this phone number already exists
+            existing = db.query(PhoneRecord).filter_by(
+                phone_number=phone
+            ).first()
+            
+            if existing:
+                # Duplicate detected
+                await self.handle_duplicate(existing, phone, message, bot, db)
+            else:
+                # New phone number, add to database
+                new_record = PhoneRecord(
+                    phone_number=phone,
+                    group_id=str(message.chat_id) if message.chat_id else None,
+                    message_id=message.message_id,
+                    user_id=message.from_user.id,
+                    is_duplicate=False
+                )
+                db.add(new_record)
+                db.commit()
+                logger.info(f"Added new phone number to watchlist: {phone}")
+    
+    async def handle_duplicate(self, existing_record, phone: str, message, bot, db):
+        """Handle a detected duplicate phone number."""
+        # Create a new record marking it as a duplicate
+        duplicate_record = PhoneRecord(
+            phone_number=phone,
+            group_id=str(message.chat_id) if message.chat_id else None,
+            message_id=message.message_id,
+            user_id=message.from_user.id,
+            is_duplicate=True
+        )
+        db.add(duplicate_record)
+        
+        # Create a duplicate alert
+        alert = DuplicateAlert(
+            phone_number=phone,
+            original_phone_id=existing_record.id,
+            duplicate_phone_id=duplicate_record.id,
+            status='pending'
+        )
+        db.add(alert)
+        db.commit()
+        
+        # Notify the group
+        alert_text = (
+            "🚨 *DUPLICATE PHONE NUMBER DETECTED* 🚨\n\n"
+            f"📱 *Phone Number:* `{phone}`\n"
+            f"📅 *First Added:* {existing_record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+            f"👤 *Reported by:* {message.from_user.mention_markdown_v2() if message.from_user else 'Unknown'}\n\n"
+            "*Please verify before proceeding with the payment.*"
+        )
+        
+        try:
+            await message.reply_text(
+                alert_text,
+                parse_mode='MarkdownV2',
+                reply_to_message_id=message.message_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to send alert: {e}")
+    
+    async def add_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Add a phone number to the watchlist."""
+        if not context.args:
+            await update.message.reply_text(
+                "Please provide a phone number.\n"
+                "Example: `/add_phone +9779841234567`",
+                parse_mode='Markdown'
+            )
+            return
+            
+        phone = ' '.join(context.args)
+        # No validation needed as per requirements
+            
+        # Add to database
+        with get_db() as db:
+            # Check if already exists
+            exists = db.query(PhoneRecord).filter_by(
+                phone_number=phone,
+                is_duplicate=False
+            ).first()
+            
+            if exists:
+                await update.message.reply_text("ℹ️ This phone number is already in the watchlist.")
+                return
+                
+            new_record = PhoneRecord(
+                phone_number=phone,
+                user_id=update.effective_user.id,
+                is_duplicate=False
+            )
+            db.add(new_record)
+            db.commit()
+            
+        await update.message.reply_text("✅ Phone number added to watchlist successfully!")
+    
+
+    
+    async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all watched phone numbers."""
+        with get_db() as db:
+            records = db.query(PhoneRecord).filter_by(is_duplicate=False).order_by(PhoneRecord.created_at.desc()).all()
+            
+        if not records:
+            await update.message.reply_text("No phone numbers in watchlist yet.")
+            return
+            
+        # Format message
+        message = "📱 *Watched Phone Numbers* 📱\n\n"
+        
+        for i, record in enumerate(records[:50], 1):  # Limit to 50 numbers
+            message += f"{i}. `{record.phone_number}`"
+            if record.created_at:
+                message += f" (added {record.created_at.strftime('%Y-%m-%d %H:%M')})"
+            message += "\n"
+                
+        if len(records) > 50:
+            message += f"\n... and {len(records) - 50} more phone numbers"
+            
+        await update.message.reply_text(message, parse_mode='Markdown')
+    
+    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show bot status and uptime."""
+        uptime = datetime.now() - self.start_time
+        days, seconds = uptime.days, uptime.seconds
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        
+        status_text = (
+            "🤖 *Bot Status*\n"
+            f"• *Uptime:* {days}d {hours}h {minutes}m\n"
+            f"• *Self-ping:* {'✅ Active' if self.self_ping_url else '❌ Inactive'}\n"
+            f"• *Version:* 1.0.0\n\n"
+            "_Use /help to see available commands_"
+        )
+        await update.message.reply_text(status_text, parse_mode='Markdown')
+    
+    async def self_ping(self, context: ContextTypes.DEFAULT_TYPE):
+        """Ping the self-ping URL to keep the bot alive."""
+        if not self.self_ping_url:
+            return
+            
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.self_ping_url) as response:
+                    if response.status == 200:
+                        logger.info("Self-ping successful")
+                    else:
+                        logger.warning(f"Self-ping failed with status {response.status}")
+        except Exception as e:
+            logger.error(f"Error in self-ping: {e}")
+    
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle errors in the telegram.ext application."""
+        logger.error("Exception while handling an update:", exc_info=context.error)
+        
+        # Log the error
+        error_msg = f"An error occurred: {context.error}"
+        logger.error(error_msg)
+        
+        # Only send error message if it's a message update
+        if update and hasattr(update, 'message') and update.message:
+            try:
+                await update.message.reply_text(
+                    "❌ An error occurred while processing your request. "
+                    "The error has been logged and will be investigated."
+                )
+            except Exception as e:
+                logger.error(f"Error sending error message: {e}")
+    
+
+
+def main():
+    """Start the bot."""
+    # Initialize database
+    init_db()
+    
+    # Create and run the bot
+    bot = AIVABot()
+    
+    # Start the Bot
+    bot.application.run_polling()
+
+if __name__ == '__main__':
+    main()
