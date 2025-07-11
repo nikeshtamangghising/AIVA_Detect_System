@@ -12,7 +12,7 @@ from telegram.ext import (
     filters, ContextTypes, JobQueue
 )
 from config import settings
-from database.database import init_db, get_db, Session
+from database.database import init_db, get_db, SessionLocal as Session
 from database.models import IdentifierRecord, DuplicateAlert
 from sqlalchemy import func
 
