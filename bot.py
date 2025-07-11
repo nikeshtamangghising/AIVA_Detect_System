@@ -303,43 +303,39 @@ class AIVABot:
     
     async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all watched phone numbers with proper session management."""
-        db = None
         try:
-            # Get a database session
-            db = next(get_db())
-            
-            # Execute the query and get all results within the session
-            records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
-            
-            if not records:
-                await update.message.reply_text("No phone numbers in watchlist yet.")
-                return
-            
-            # Extract all data we need while the session is still active
-            formatted_records = []
-            for record in records:
-                # Get all attributes while the session is active
-                record_data = {
-                    'number': str(record.number) if record.number else '',
-                    'created_at': record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown',
-                    'id': str(record.id) if hasattr(record, 'id') else 'N/A'
-                }
-                formatted_records.append(record_data)
-            
-            # Close the session before sending the message
-            db.close()
-            db = None
-            
-            # Format the message
-            message = "📱 *Watched Phone Numbers* 📱\n\n"
-            
-            for i, record in enumerate(formatted_records[:50], 1):
-                # Escape Markdown special characters
-                safe_number = record['number'].replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
-                message += f"{i}. `{safe_number}` (added {record['created_at']})\n"
-            
-            if len(formatted_records) > 50:
-                message += f"\n... and {len(formatted_records) - 50} more phone numbers"
+            # Use the database context manager
+            with get_db() as db:
+                # Execute the query and get all results within the session
+                records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
+                
+                if not records:
+                    await update.message.reply_text("No phone numbers in watchlist yet.")
+                    return
+                
+                # Create a formatted message with all records
+                message = "📋 *Watched Numbers*\n\n"
+                for i, record in enumerate(records, 1):
+                    message += f"{i}. `{record.number}`"
+                    if record.notes:
+                        message += f" - {record.notes}"
+                    message += "\n"
+                
+                # Send the message with Markdown formatting
+                try:
+                    await update.message.reply_text(
+                        message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                except Exception as e:
+                    # Fall back to plain text if Markdown fails
+                    logger.warning(f"Markdown error in list_data: {e}")
+                    plain_message = message.replace('*', '').replace('`', '')
+                    await update.message.reply_text(
+                        plain_message,
+                        disable_web_page_preview=True
+                    )
             
             # Send the message with error handling
             try:
