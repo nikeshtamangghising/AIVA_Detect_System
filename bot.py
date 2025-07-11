@@ -424,45 +424,60 @@ async def add_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all watched phone numbers."""
     try:
+        # Get a new database session
         db = next(get_db())
         try:
-            # Query and process all data within the session
-            records = db.query(PhoneRecord).filter_by(is_duplicate=False).order_by(PhoneRecord.created_at.desc()).all()
+            # Query all records and immediately convert them to dictionaries
+            records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
             
             if not records:
                 await update.message.reply_text("No phone numbers in watchlist yet.")
                 return
             
+            # Extract all data we need before closing the session
+            record_data = []
+            for record in records:
+                record_data.append({
+                    'id': record.id,
+                    'number': record.number,
+                    'created_at': record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown'
+                })
+            
+            # Close the session as soon as we're done with database operations
+            db.close()
+            
             # Format message with proper Markdown escaping
             message = "📱 *Watched Phone Numbers* 📱\n\n"
             
-            for i, record in enumerate(records[:50], 1):  # Limit to 50 numbers
-                # Ensure we have valid data
-                if not hasattr(record, 'number'):
-                    logger.warning(f"Record {record.id} has no number attribute")
-                    continue
-                    
-                # Format the created_at timestamp
-                created_at = record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown'
-                
+            for i, record in enumerate(record_data[:50], 1):  # Limit to 50 numbers
                 # Escape Markdown special characters in the phone number
-                safe_number = str(record.number).replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
-                message += f"{i}. `{safe_number}` (added {created_at})\n"
+                safe_number = str(record['number']).replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
+                message += f"{i}. `{safe_number}` (added {record['created_at']})\n"
             
-            if len(records) > 50:
-                message += f"\n... and {len(records) - 50} more phone numbers"
+            if len(record_data) > 50:
+                message += f"\n... and {len(record_data) - 50} more phone numbers"
             
             # Send the message with Markdown parsing
-            await update.message.reply_text(message, parse_mode='Markdown')
+            try:
+                await update.message.reply_text(message, parse_mode='Markdown')
+            except Exception as e:
+                # Fallback to plain text if Markdown parsing fails
+                logger.warning(f"Markdown error, falling back to plain text: {e}")
+                plain_message = message.replace('*', '').replace('`', '').replace('_', '')
+                await update.message.reply_text(plain_message)
             
-        finally:
-            db.close()
+        except Exception as e:
+            logger.error(f"Database error in list_data: {str(e)}", exc_info=True)
+            try:
+                await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
+            except Exception as send_error:
+                logger.error(f"Failed to send error message: {str(send_error)}")
+            return
             
     except Exception as e:
-        logger.error(f"Error in list_data: {str(e)}", exc_info=True)
-        # Fallback to plain text if anything goes wrong
+        logger.error(f"Unexpected error in list_data: {str(e)}", exc_info=True)
         try:
-            await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
+            await update.message.reply_text("❌ An unexpected error occurred. Please try again later.")
         except Exception as send_error:
             logger.error(f"Failed to send error message: {str(send_error)}")
     
