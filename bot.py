@@ -519,6 +519,10 @@ def get_application():
 
 def main():
     """Start the bot."""
+    # Initialize database first
+    from database.database import init_db
+    init_db()
+    
     application = get_application()
     
     # Check if running on Render
