@@ -1,7 +1,7 @@
-from sqlalchemy import create_engine
+from contextlib import contextmanager
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
-from sqlalchemy import event
+from sqlalchemy.orm import scoped_session, sessionmaker
 from config import settings
 import logging
 import os
