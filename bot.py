@@ -374,175 +374,36 @@ class AIVABot:
         logger.info(f"handle_message: chat_id={update.effective_chat.id if update.effective_chat else None}, chat_type={update.effective_chat.type if update.effective_chat else None}, text={update.message.text if update.message else None}")
         if not update.message or not update.message.text:
             return
-            
         message = update.message
         text = message.text
-        
         # Skip if message is from a channel
         if message.sender_chat and message.sender_chat.type == "channel":
             return
-            
-        # Check for numbers in the message
-        # Using a simple regex to find potential numbers
-        # This is a basic pattern and might need adjustment based on your needs
-        numbers = re.findall(r'\b\d{10,}\b', text)
-        
-        if not numbers:
+        # Extract all unique alphanumeric words/codes (bank account, reference, etc.)
+        unique_texts = re.findall(r'\b[a-zA-Z0-9]+\b', text)
+        if not unique_texts:
             return
-    
-async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a message when the command /help is issued."""
-    help_text = (
-        "🤖 *AIVA Detect System* 🤖\n\n"
-        "*Available Commands:*\n"
-        "• /start - Start the bot\n"
-        "• /help - Show help\n"
-        "• /status - Show status\n\n"
-        "*Admin Commands:*\n"
-        "• /number <number> - Add number to watchlist\n"
-        "• /list_data - List all watched numbers\n"
-        "• /remove <ID> - Remove a number from watchlist\n\n"
-        "*How It Works:*\n"
-        "1. Add numbers with `/number <number>`\n"
-        "2. Check numbers with `/list_data`\n"
-        "3. I'll notify about duplicates"
-    )
-    try:
-        await update.message.reply_text(help_text, parse_mode='Markdown')
-    except Exception as e:
-        # Fallback to plain text if Markdown fails
-        logging.warning(f"Markdown error: {e}")
-        await update.message.reply_text(help_text.replace('*', '').replace('_', ''), parse_mode=None)
-            
-async def remove_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove a number from the watchlist by ID."""
-    if not context.args:
-        await update.message.reply_text(
-            "Please provide the ID of the number to remove.\n"
-            "Example: `/remove 123`\n\n"
-            "Use `/list_data` to see all numbers and their IDs.",
-            parse_mode='Markdown'
-        )
-        return
-            
-    try:
-        number_id = int(context.args[0])
-        with get_db() as db:
-            # Try to find the number record
-            record = db.query(NumberRecord).filter_by(id=number_id, is_duplicate=False).first()
-                
-            if not record:
-                await update.message.reply_text("❌ Number not found. Use `/list_data` to see available numbers.", parse_mode='Markdown')
-                return
-                
-            # Delete the record
-            db.delete(record)
-            db.commit()
-                
-            await update.message.reply_text(f"✅ Successfully removed number `{record.number}` from the watchlist.", parse_mode='Markdown')
-                
-    except ValueError:
-        await update.message.reply_text("❌ Invalid ID. Please provide a valid number ID.")
-    except Exception as e:
-        logger.error(f"Error removing number: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while removing the number. Please try again.")
-    
-async def new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle new chat members event."""
-    for member in update.message.new_chat_members:
-        if member.id == context.bot.id:
-            # Bot was added to a group
-            chat = update.effective_chat
-            await self.handle_bot_added(chat, context.bot)
-            break
-    
-async def handle_bot_added(self, chat, bot):
-    """Handle the event when bot is added to a group."""
-    # Send welcome message to the group
-    welcome_text = (
-        "👋 *Welcome to AIVA Detect System!*\n\n"
-        "I'll help you detect and prevent duplicate payments in this group.\n\n"
-        "*How It Works:*\n"
-        "1. Add me to your group\n"
-        "2. I'll automatically detect numbers in messages\n"
-        "3. If a duplicate number is found, I'll notify the group\n\n"
-        "*Note:* Only group admins can manage my settings."
-    )
-    await bot.send_message(
-        chat_id=chat.id,
-        text=welcome_text,
-        parse_mode='Markdown'
-    )
-        
-    # Send private message to admins
-    admins = await chat.get_administrators()
-    for admin in admins:
-        try:
-            admin_text = (
-                f"👋 Hello! I've been added to *{chat.title}*.\n\n"
-                "*Admin Controls:*\n"
-                "• Use /number to add numbers to watchlist\n"
-                "• Use /list_data to view all watched numbers\n\n"
-                "I'll notify this group if I detect any duplicate numbers."
-            )
-            await bot.send_message(
-                chat_id=admin.user.id,
-                text=admin_text,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Failed to send admin message: {e}")
-    
-# Payment detection and database methods will be added here
-async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages and detect numbers."""
-    if not update.message or not update.message.text:
-        return
-            
-    message = update.message
-    text = message.text
-        
-    # Skip if message is from a channel
-    if message.sender_chat and message.sender_chat.type == "channel":
-        return
-            
-    # Check for numbers in the message
-    # Using a simple regex to find potential numbers
-    # This is a basic pattern and might need adjustment based on your needs
-    numbers = re.findall(r'\b\d{10,}\b', text)
-        
-    if not numbers:
-        return
-            
-    for number in numbers:
-        await self.process_number(number, message, context.bot)
+        for unique_text in unique_texts:
+            await self.process_unique_text(unique_text, message, context.bot)
 
-    async def process_number(self, number: str, message, bot):
-        logger.info(f"process_number: number={number}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+    async def process_unique_text(self, unique_text: str, message, bot):
+        logger.info(f"process_unique_text: unique_text={unique_text}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
         try:
             with get_db() as db:
-                # First check if this exact number already exists as a non-duplicate
                 existing = db.query(NumberRecord).filter(
-                    NumberRecord.number == number,
+                    NumberRecord.number == unique_text,
                     NumberRecord.is_duplicate == False
                 ).first()
-                
                 if existing:
-                    # Found a match - handle as duplicate
-                    logger.info(f"Duplicate found for number={number} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
-                    await self.handle_duplicate(existing, number, message, bot, db)
+                    logger.info(f"Duplicate found for unique_text={unique_text} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+                    await self.handle_duplicate(existing, unique_text, message, bot, db)
                     return True
-                    
-                # If we get here, it's either a new number or already marked as duplicate
-                # Check if we've seen this number before (even as a duplicate)
                 seen_before = db.query(NumberRecord).filter(
-                    NumberRecord.number == number
+                    NumberRecord.number == unique_text
                 ).first()
-                
                 if not seen_before:
-                    # This is a brand new number - add to database
                     new_record = NumberRecord(
-                        number=number,
+                        number=unique_text,
                         group_id=str(message.chat.id) if hasattr(message, 'chat') and message.chat else None,
                         message_id=message.message_id if hasattr(message, 'message_id') else None,
                         user_id=message.from_user.id if hasattr(message, 'from_user') and message.from_user else None,
@@ -550,64 +411,52 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
                     )
                     db.add(new_record)
                     db.commit()
-                    logger.info(f"New number added to watchlist: {number}")
-                
+                    logger.info(f"New unique text added to watchlist: {unique_text}")
                 return False
         except Exception as e:
-            logger.error(f"Error in process_number: {e}", exc_info=True)
+            logger.error(f"Error in process_unique_text: {e}", exc_info=True)
             return False
 
-    async def handle_duplicate(self, existing_record, number: str, message, bot, db):
-        logger.info(f"handle_duplicate: number={number}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+    async def handle_duplicate(self, existing_record, unique_text: str, message, bot, db):
+        logger.info(f"handle_duplicate: unique_text={unique_text}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
         try:
-            # Create a new record marking it as a duplicate
             duplicate_record = NumberRecord(
-                number=number,
+                number=unique_text,
                 group_id=str(message.chat.id) if hasattr(message, 'chat') and message.chat else None,
                 message_id=message.message_id if hasattr(message, 'message_id') else None,
                 user_id=message.from_user.id if hasattr(message, 'from_user') and message.from_user else None,
                 is_duplicate=True
             )
             db.add(duplicate_record)
-            
-            # Create a duplicate alert
             alert = DuplicateAlert(
-                number=number,
+                number=unique_text,
                 original_number_id=existing_record.id,
                 duplicate_number_id=duplicate_record.id,
                 status='pending'
             )
             db.add(alert)
             db.commit()
-            
-            # Prepare user-friendly alert message
             user = message.from_user if hasattr(message, 'from_user') and message.from_user else None
             username = f"@{user.username}" if user and user.username else (user.first_name if user else "a user")
-            
             alert_text = (
-                "🚨 *DOUBLE PAYMENT DETECTED* 🚨\n\n"
+                "🚨 *DUPLICATE DETECTED* 🚨\n\n"
                 f"⚠️ *HOLD - DO NOT PROCEED* ⚠️\n\n"
-                f"📱 *Number:* `{number}`\n"
+                f"🔑 *Identifier:* `{unique_text}`\n"
                 f"📅 *First Added:* {existing_record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
                 f"👤 *Reported by:* {username}\n\n"
-                "*Please verify this transaction before proceeding with payment.*\n"
-                "_This number has been previously processed._"
+                "*Please verify this transaction before proceeding.*\n"
+                "_This identifier has been previously processed._"
             )
-            
-            # Try to send the alert
             try:
-                # First try to reply to the message
                 await message.reply_text(
                     alert_text,
                     parse_mode='Markdown',
                     reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None
                 )
-                logger.info(f"Alert sent for duplicate: {number} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
-                
+                logger.info(f"Alert sent for duplicate: {unique_text} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
             except Exception as e:
                 logger.error(f"Failed to send alert as reply, trying direct message: {e}")
                 try:
-                    # If reply fails, try sending a direct message
                     chat_id = message.chat.id if hasattr(message, 'chat') and message.chat else None
                     if chat_id:
                         await bot.send_message(
@@ -615,17 +464,15 @@ async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYP
                             text=alert_text,
                             parse_mode='Markdown'
                         )
-                        logger.info(f"Alert sent for duplicate (fallback): {number} in chat_id={chat_id}")
+                        logger.info(f"Alert sent for duplicate (fallback): {unique_text} in chat_id={chat_id}")
                 except Exception as e2:
                     logger.error(f"Failed to send duplicate alert: {e2}")
-                    
         except Exception as e:
             logger.error(f"Error in handle_duplicate: {e}", exc_info=True)
-            # Try to notify admins of the error
             try:
                 if hasattr(message, 'chat') and message.chat:
                     await message.reply_text(
-                        "⚠️ An error occurred while processing this payment. Please contact an admin.",
+                        "⚠️ An error occurred while processing this identifier. Please contact an admin.",
                         reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None
                     )
             except:
