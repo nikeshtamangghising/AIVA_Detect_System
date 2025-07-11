@@ -202,6 +202,54 @@ class AIVABot:
                 logger.error(f"Failed to send admin message: {e}")
     
     # Payment detection and database methods will be added here
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log the error and send a message to the user."""
+        # Log the error
+        logger.error("Exception while handling an update:", exc_info=context.error)
+        
+        # Try to send a message to the user
+        try:
+            # If we're handling a message, try to reply to it
+            if update and hasattr(update, 'message') and update.message:
+                await update.message.reply_text(
+                    "❌ An unexpected error occurred. The admin has been notified."
+                )
+            # If we're in a callback query, answer it
+            elif update and hasattr(update, 'callback_query') and update.callback_query:
+                await update.callback_query.answer(
+                    "❌ An error occurred. Please try again.",
+                    show_alert=True
+                )
+        except Exception as e:
+            logger.error(f"Error in error handler while sending message: {e}")
+        
+        # Notify admins about the error
+        try:
+            error_message = (
+                f"⚠️ *Error in bot* ⚠️\n\n"
+                f"*Error:* {context.error.__class__.__name__}\n"
+                f"*Message:* {str(context.error)}\n"
+            )
+            
+            # Add update info if available
+            if update and hasattr(update, 'effective_chat'):
+                error_message += f"\n*Chat:* {update.effective_chat.title if hasattr(update.effective_chat, 'title') else 'Private'}"
+                error_message += f"\n*User:* @{update.effective_user.username if update.effective_user.username else update.effective_user.id}"
+            
+            # Send to all admins
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=error_message,
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send error notification to admin {admin_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error in error handler while notifying admins: {e}")
+    
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show bot status and statistics."""
         try:
