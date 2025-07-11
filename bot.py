@@ -202,6 +202,43 @@ class AIVABot:
                 logger.error(f"Failed to send admin message: {e}")
     
     # Payment detection and database methods will be added here
+    async def add_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Add a number to the watchlist."""
+        if not context.args:
+            await update.message.reply_text(
+                "Please provide a number.\n"
+                "Example: `/number 9841234567`\n\n"
+                "Use /list_data to see all watched numbers.",
+                parse_mode='Markdown'
+            )
+            return
+                
+        number = ' '.join(context.args)
+        
+        # Add to database
+        with get_db() as db:
+            # Check if already exists
+            exists = db.query(NumberRecord).filter(
+                NumberRecord.number == number,
+                NumberRecord.is_duplicate == False
+            ).first()
+                
+            if exists:
+                await update.message.reply_text("ℹ️ This number is already in the watchlist.")
+                return
+                    
+            # Add new number
+            new_record = NumberRecord(
+                number=number,
+                user_id=update.effective_user.id,
+                group_id=str(update.effective_chat.id) if update.effective_chat else None,
+                is_duplicate=False
+            )
+            db.add(new_record)
+            db.commit()
+                
+            await update.message.reply_text("✅ Number added to watchlist successfully!")
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming messages and detect numbers."""
         if not update.message or not update.message.text:
