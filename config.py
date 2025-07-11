@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import List, Optional
+from pydantic import validator
 from pydantic_settings import BaseSettings
 
 # Load environment variables from .env file
