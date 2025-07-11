@@ -36,7 +36,16 @@ class Settings(BaseSettings):
         case_sensitive = True
     
     # Database
-    DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///aiva_detect.db')
+    DATABASE_DIR: str = os.getenv('DATABASE_DIR', 'instance')
+    DATABASE_FILENAME: str = os.getenv('DATABASE_FILENAME', 'aiva_detect.db')
+    
+    @property
+    def DATABASE_URL(self) -> str:
+        """Get the database URL, ensuring the directory exists."""
+        # Create the database directory if it doesn't exist
+        os.makedirs(self.DATABASE_DIR, exist_ok=True)
+        # Return the full path to the SQLite database file
+        return f"sqlite:///{os.path.join(self.DATABASE_DIR, self.DATABASE_FILENAME)}"
     
     # Logging
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
