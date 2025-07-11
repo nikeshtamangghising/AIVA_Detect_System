@@ -18,18 +18,17 @@ class Settings(BaseSettings):
     BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
     
     # Parse ADMIN_IDS from environment variable
-    ADMIN_IDS: List[int] = [1]  # Default to admin ID 1
+    ADMIN_IDS: str = '1'  # Store as string to avoid JSON parsing
     
-    @validator('ADMIN_IDS', pre=True)
-    def parse_admin_ids(cls, v):
-        if isinstance(v, str):
-            if not v.strip():
-                return [1]  # Default to admin ID 1 if empty
-            if v.strip().isdigit():
-                return [int(v.strip())]  # Single number
-            # Comma-separated list
-            return [int(x.strip()) for x in v.split(',') if x.strip().isdigit()]
-        return v or [1]  # Default to admin ID 1 if invalid
+    @property
+    def admin_ids_list(self) -> List[int]:
+        """Get admin IDs as a list of integers."""
+        if not self.ADMIN_IDS.strip():
+            return [1]  # Default to admin ID 1 if empty
+        if self.ADMIN_IDS.strip().isdigit():
+            return [int(self.ADMIN_IDS.strip())]  # Single number
+        # Comma-separated list
+        return [int(x.strip()) for x in self.ADMIN_IDS.split(',') if x.strip().isdigit()] or [1]
     
     class Config:
         env_file = '.env'
