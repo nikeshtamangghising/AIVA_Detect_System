@@ -545,7 +545,17 @@ def get_application():
     """Create and configure the bot application."""
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
-        raise ValueError("TELEGRAM_TOKEN environment variable is not set")
+        error_msg = (
+            "Error: TELEGRAM_TOKEN environment variable is not set.\n\n"
+            "To fix this:\n"
+            "1. Get your bot token from @BotFather on Telegram\n"
+            "2. Add it to your environment variables:\n"
+            "   - Local: Set TELEGRAM_TOKEN='your_token_here' in .env file\n"
+            "   - Render: Add it in the Environment tab of your service settings\n"
+            "   - Format: TELEGRAM_TOKEN=1234567890:ABCdefGHIjklmNOPQrstUVWXYZ"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     
     bot = AIVABot(token)
     return bot.application
