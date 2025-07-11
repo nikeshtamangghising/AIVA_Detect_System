@@ -1,13 +1,9 @@
 from contextlib import contextmanager
-from sqlalchemy import create_engine, event
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from config import settings
 import logging
 import os
-
-# Ensure the instance folder exists
-os.makedirs('instance', exist_ok=True)
 
 # Configure logging
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -28,10 +24,6 @@ engine = create_engine(
 # Create a scoped session factory
 SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 
-# Base class for models
-Base = declarative_base()
-Base.query = SessionLocal.query_property()
-
 # Dependency to get DB session
 @contextmanager
 def get_db():
@@ -49,8 +41,12 @@ def get_db():
 
 def init_db():
     """Initialize the database."""
-    import database.models  # Import models to register them with SQLAlchemy
-    Base.metadata.create_all(bind=engine)
+    # Import models to register them with SQLAlchemy
+    from . import models
+    from sqlalchemy.ext.declarative import declarative_base
+    
+    # Create all tables
+    models.Base.metadata.create_all(bind=engine)
     logger.info("Database tables created")
 
 def close_db_connection():

@@ -519,9 +519,20 @@ def get_application():
 
 def main():
     """Start the bot."""
-    # Initialize database first
-    from database.database import init_db
-    init_db()
+    try:
+        # Initialize database first
+        from database.database import init_db
+        from database.models import Base
+        from database.database import engine
+        
+        # Ensure tables are created
+        Base.metadata.create_all(bind=engine)
+        init_db()
+        
+        logger.info("Database initialization complete")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
     
     application = get_application()
     

@@ -1,8 +1,13 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
+from .database import SessionLocal
 
+# Create the declarative base
 Base = declarative_base()
+
+# Set up query property for models
+Base.query = SessionLocal.query_property()
 
 class NumberRecord(Base):
     __tablename__ = "number_records"
