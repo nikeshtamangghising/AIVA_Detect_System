@@ -3,17 +3,18 @@ import os
 import asyncio
 import aiohttp
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import re
 
-from telegram import Update
+from telegram import Update, Message, User, Chat
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     filters, ContextTypes, JobQueue
 )
 from config import settings
-from database.database import init_db, get_db
-from database.models import NumberRecord, DuplicateAlert
+from database.database import init_db, get_db, Session
+from database.models import IdentifierRecord, DuplicateAlert
+from sqlalchemy import func
 
 # Configure logging
 logging.basicConfig(
@@ -22,438 +23,365 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# No pattern validation needed as per requirements
-
 class AIVABot:
-    def __init__(self):
+    def __init__(self, token: str):
         """Initialize the bot."""
-        # Configure application with persistence and context types
-        self.application = (
-            Application.builder()
-            .token(settings.BOT_TOKEN)
-            .persistence(None)  # Disable persistence to avoid conflicts
-            .concurrent_updates(True)  # Handle updates concurrently
-            .build()
-        )
-        
+        self.application = Application.builder().token(token).build()
         self.start_time = datetime.now()
-        self.self_ping_url = getattr(settings, 'SELF_PING_URL', None)
-        self.setup_handlers()
-        self.setup_commands()
+        self.self_ping_url = os.getenv('SELF_PING_URL')
+        self._setup_handlers()
+        self._setup_commands()
+        logger.info("Bot initialized")
         
-        # Schedule self-ping job if URL is provided
-        if self.self_ping_url:
-            self.application.job_queue.run_repeating(
-                self.self_ping,
-                interval=timedelta(minutes=25),  # Ping every 25 minutes (under 30 min free tier limit)
-                first=10  # Start after 10 seconds
-            )
-        
-    def setup_handlers(self):
+        # Initialize database
+        try:
+            init_db()
+            logger.info("Database initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            raise
+
+    def _setup_handlers(self):
         """Setup all command and message handlers."""
-        # Command handlers
+        # Add command handlers
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("number", self.add_number))
-        # Support both /list_data and /listdata
-        self.application.add_handler(CommandHandler("list_data", self.list_data))
-        self.application.add_handler(CommandHandler("listdata", self.list_data))  # Alias without underscore
-        self.application.add_handler(CommandHandler("remove", self.remove_number))
+        self.application.add_handler(CommandHandler("number", self.add_identifier))
+        self.application.add_handler(CommandHandler("list", self.list_identifiers))
+        self.application.add_handler(CommandHandler("list_data", self.list_identifiers))
         self.application.add_handler(CommandHandler("status", self.status))
+        self.application.add_handler(CommandHandler("remove", self.remove_identifier))
         
-        # Message handler for phone number detection
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            self.handle_message
-        ))
+        # Add message handler for processing messages
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        # Error handler
+        # Add error handler
         self.application.add_error_handler(self.error_handler)
-    
-    def setup_commands(self):
-        """Setup bot commands for the menu."""
+        
+        # Add job queue for self-ping
+        self.job_queue = self.application.job_queue
+        if self.job_queue and self.self_ping_url:
+            self.job_queue.run_repeating(self.self_ping, interval=300.0, first=10.0)
+
+    def _setup_commands(self):
+        """Setup bot commands."""
         commands = [
             ("start", "Start the bot"),
             ("help", "Show help information"),
-            ("number", "Add number to watchlist"),
-            ("list_data", "List all watched numbers"),
-            ("remove", "Remove a number from watchlist"),
+            ("number", "Add a number to monitor (e.g., /number 1234567890)"),
+            ("list", "List all monitored numbers"),
+            ("status", "Show bot status"),
+            ("remove", "Remove a number (admin only)")
         ]
-        
-        # Set commands using set_my_commands
-        async def set_commands():
-            await self.application.bot.set_my_commands(
-                [("/" + cmd, desc) for cmd, desc in commands]
-            )
-        
-        self.application.job_queue.run_once(lambda _: set_commands(), 0)
-    
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self.application.bot.set_my_commands(commands)
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a welcome message when the command /start is issued."""
         user = update.effective_user
-        await update.message.reply_text(
-            f'Hi {user.first_name}! I am AIVA Detect System.\n\n'
-            'I help detect and prevent duplicate payments in your groups.\n\n'
-            'Add me to your group and I will start monitoring for duplicate payments.\n\n'
-            'Use /help to see all available commands.'
+        welcome_text = (
+            f"👋 Hello {user.first_name}!\n\n"
+            "I'm AIVA Detect Bot. I can help you monitor and detect duplicate identifiers.\n\n"
+            "📋 *Available Commands:*\n"
+            "/number <identifier> - Add an identifier to monitor\n"
+            "/list - List all monitored identifiers\n"
+            "/status - Show bot status\n"
+            "/help - Show this help message"
         )
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        
+        if user.id in settings.ADMIN_IDS:
+            welcome_text += "\n\n🔒 *Admin Commands:*\n"
+            welcome_text += "/remove <id> - Remove an identifier (Admin only)\n"
+        
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /help is issued."""
         help_text = (
-            "🤖 *AIVA Detect System* 🤖\n\n"
+            "🤖 *AIVA Detect Bot Help*\n\n"
+            "I can help you monitor and detect duplicate identifiers.\n\n"
             "*Available Commands:*\n"
-            "• /start - Start the bot\n"
-            "• /help - Show help\n"
-            "• /status - Show status\n\n"
-            "*Admin Commands:*\n"
-            "• /number <number> - Add number to watchlist\n"
-            "• /list_data - List all watched numbers\n"
-            "• /remove <ID> - Remove a number from watchlist\n\n"
-            "*How It Works:*\n"
-            "1. Add numbers with `/number <number>`\n"
-            "2. Check numbers with `/list_data`\n"
-            "3. I'll notify about duplicates"
+            "• /start - Start the bot and show welcome message\n"
+            "• /help - Show this help message\n"
+            "• /number <identifier> - Add an identifier to monitor\n"
+            "• /list - List all monitored identifiers\n"
+            "• /status - Show bot status and statistics"
         )
-        try:
-            await update.message.reply_text(help_text, parse_mode='Markdown')
-        except Exception as e:
-            # Fallback to plain text if Markdown fails
-            logging.warning(f"Markdown error: {e}")
-            await update.message.reply_text(help_text.replace('*', '').replace('_', ''), parse_mode=None)
+        
+        if update.effective_user.id in settings.ADMIN_IDS:
+            help_text += "\n\n*Admin Commands:*\n"
+            help_text += "• /remove <id> - Remove an identifier"
+        
+        await update.message.reply_text(
+            help_text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+
+    def determine_identifier_type(self, identifier: str) -> str:
+        """Determine the type of identifier based on its format."""
+        # Simple check for email
+        if '@' in identifier and '.' in identifier.split('@')[-1]:
+            return 'email'
             
-    async def remove_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Remove a number from the watchlist by ID."""
+        # Check for potential phone number (digits only, 8-15 digits)
+        if identifier.isdigit() and 8 <= len(identifier) <= 15:
+            return 'phone'
+            
+        # Check for potential bank account number (usually 9-18 digits)
+        if identifier.isdigit() and 9 <= len(identifier) <= 18:
+            return 'bank_account'
+            
+        # Check for potential reference code (alphanumeric with dashes/underscores)
+        if any(c.isalpha() for c in identifier) and any(c.isdigit() for c in identifier):
+            return 'reference_code'
+            
+        # Default to 'other' for anything that doesn't match above patterns
+        return 'other'
+
+    async def add_identifier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Add a new identifier to monitor."""
         if not context.args:
             await update.message.reply_text(
-                "Please provide the ID of the number to remove.\n"
-                "Example: `/remove 123`\n\n"
-                "Use `/list_data` to see all numbers and their IDs.",
+                "❌ Please provide an identifier. Example: `/number 1234567890`",
                 parse_mode='Markdown'
             )
             return
             
+        identifier = ' '.join(context.args).strip()
+        if not identifier:
+            await update.message.reply_text("❌ Identifier cannot be empty.")
+            return
+            
+        identifier_type = self.determine_identifier_type(identifier)
+        
         try:
-            number_id = int(context.args[0])
             with get_db() as db:
-                # Try to find the number record
-                record = db.query(NumberRecord).filter_by(id=number_id, is_duplicate=False).first()
+                # Check if identifier already exists
+                existing = db.query(IdentifierRecord).filter(
+                    IdentifierRecord.identifier == identifier,
+                    IdentifierRecord.is_duplicate == False
+                ).first()
                 
-                if not record:
-                    await update.message.reply_text("❌ Number not found. Use `/list_data` to see available numbers.", parse_mode='Markdown')
+                if existing:
+                    await update.message.reply_text(
+                        f"⚠️ This identifier is already being monitored."
+                    )
                     return
                 
-                # Delete the record
-                db.delete(record)
+                # Create new record
+                new_record = IdentifierRecord(
+                    identifier=identifier,
+                    identifier_type=identifier_type,
+                    user_id=update.effective_user.id,
+                    is_duplicate=False
+                )
+                
+                db.add(new_record)
                 db.commit()
                 
-                await update.message.reply_text(f"✅ Successfully removed number `{record.number}` from the watchlist.", parse_mode='Markdown')
-                
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID. Please provide a valid number ID.")
-        except Exception as e:
-            logger.error(f"Error removing number: {str(e)}", exc_info=True)
-            await update.message.reply_text("❌ An error occurred while removing the number. Please try again.")
-    
-    async def new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle new chat members event."""
-        for member in update.message.new_chat_members:
-            if member.id == context.bot.id:
-                # Bot was added to a group
-                chat = update.effective_chat
-                await self.handle_bot_added(chat, context.bot)
-                break
-    
-    async def handle_bot_added(self, chat, bot):
-        """Handle the event when bot is added to a group."""
-        # Send welcome message to the group
-        welcome_text = (
-            "👋 *Welcome to AIVA Detect System!*\n\n"
-            "I'll help you detect and prevent duplicate payments in this group.\n\n"
-            "*How It Works:*\n"
-            "1. Add me to your group\n"
-            "2. I'll automatically detect numbers in messages\n"
-            "3. If a duplicate number is found, I'll notify the group\n\n"
-            "*Note:* Only group admins can manage my settings."
-        )
-        await bot.send_message(
-            chat_id=chat.id,
-            text=welcome_text,
-            parse_mode='Markdown'
-        )
-        
-        # Send private message to admins
-        admins = await chat.get_administrators()
-        for admin in admins:
-            try:
-                admin_text = (
-                    f"👋 Hello! I've been added to *{chat.title}*.\n\n"
-                    "*Admin Controls:*\n"
-                    "• Use /number to add numbers to watchlist\n"
-                    "• Use /list_data to view all watched numbers\n\n"
-                    "I'll notify this group if I detect any duplicate numbers."
-                )
-                await bot.send_message(
-                    chat_id=admin.user.id,
-                    text=admin_text,
+                await update.message.reply_text(
+                    f"✅ Successfully added identifier: `{identifier}`\n"
+                    f"Type: {identifier_type.upper() if identifier_type else 'UNKNOWN'}",
                     parse_mode='Markdown'
                 )
-            except Exception as e:
-                logger.error(f"Failed to send admin message: {e}")
-    
-    # Payment detection and database methods will be added here
-    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Log the error and send a message to the user."""
-        # Log the error
-        logger.error("Exception while handling an update:", exc_info=context.error)
-        
-        # Try to send a message to the user
-        try:
-            # If we're handling a message, try to reply to it
-            if update and hasattr(update, 'message') and update.message:
-                await update.message.reply_text(
-                    "❌ An unexpected error occurred. The admin has been notified."
-                )
-            # If we're in a callback query, answer it
-            elif update and hasattr(update, 'callback_query') and update.callback_query:
-                await update.callback_query.answer(
-                    "❌ An error occurred. Please try again.",
-                    show_alert=True
-                )
-        except Exception as e:
-            logger.error(f"Error in error handler while sending message: {e}")
-        
-        # Notify admins about the error
-        try:
-            error_message = (
-                f"⚠️ *Error in bot* ⚠️\n\n"
-                f"*Error:* {context.error.__class__.__name__}\n"
-                f"*Message:* {str(context.error)}\n"
-            )
-            
-            # Add update info if available
-            if update and hasattr(update, 'effective_chat'):
-                error_message += f"\n*Chat:* {update.effective_chat.title if hasattr(update.effective_chat, 'title') else 'Private'}"
-                error_message += f"\n*User:* @{update.effective_user.username if update.effective_user.username else update.effective_user.id}"
-            
-            # Send to all admins
-            for admin_id in settings.ADMIN_IDS:
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=error_message,
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send error notification to admin {admin_id}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Error in error handler while notifying admins: {e}")
-    
-    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show bot status and statistics."""
-        try:
-            with get_db() as db:
-                # Get counts from database
-                total_numbers = db.query(NumberRecord).count()
-                unique_numbers = db.query(NumberRecord).filter(
-                    NumberRecord.is_duplicate == False
-                ).count()
-                duplicates = total_numbers - unique_numbers
                 
-                # Calculate uptime
-                uptime = datetime.now() - self.start_time
-                hours, remainder = divmod(int(uptime.total_seconds()), 3600)
-                minutes, seconds = divmod(remainder, 60)
-                days, hours = divmod(hours, 24)
-                
-                # Format status message
-                status_message = (
-                    f"🤖 *AIVA Detect System Status*\n\n"
-                    f"🕒 *Uptime:* {days}d {hours}h {minutes}m {seconds}s\n"
-                    f"📊 *Numbers Tracked:* {unique_numbers}\n"
-                    f"🔄 *Duplicates Detected:* {duplicates}\n"
-                    f"📅 *Last Started:* {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    "✅ *Bot is running smoothly*"
-                )
-                
-                # Send status message
-                await update.message.reply_text(
-                    status_message,
-                    parse_mode='Markdown',
-                    disable_web_page_preview=True
-                )
+                # Log the addition
+                logger.info(f"New identifier added: {identifier} (Type: {identifier_type}) by user {update.effective_user.id}")
                 
         except Exception as e:
-            logger.error(f"Error in status command: {e}", exc_info=True)
+            logger.error(f"Error in add_identifier: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ Could not retrieve status information. Please try again later."
+                "❌ An error occurred while adding the identifier. Please try again later."
             )
-    
-    async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List all watched numbers."""
+
+    async def list_identifiers(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List all monitored identifiers."""
         try:
             with get_db() as db:
-                # Get all non-duplicate records
-                records = db.query(NumberRecord).filter(
-                    NumberRecord.is_duplicate == False
-                ).order_by(NumberRecord.created_at.desc()).all()
+                # Get all non-duplicate identifiers
+                records = db.query(IdentifierRecord).filter(
+                    IdentifierRecord.is_duplicate == False
+                ).order_by(IdentifierRecord.created_at.desc()).all()
                 
                 if not records:
-                    await update.message.reply_text("No numbers in the watchlist yet.")
+                    await update.message.reply_text("No identifiers are currently being monitored.")
                     return
                 
-                # Format the message
-                message = ("📋 *Watched Numbers*\n\n" +
-                         "\n".join(
-                             f"{i+1}. `{record.number}` (ID: {record.id})"
-                             for i, record in enumerate(records)
-                         ) +
-                         "\n\nUse `/remove <ID>` to remove a number from the watchlist.")
+                # Format the response
+                response = ["📋 *Monitored Identifiers*\n"]
+                for i, record in enumerate(records, 1):
+                    response.append(
+                        f"{i}. `{record.identifier}`\n"
+                        f"   Type: {record.identifier_type.upper() if record.identifier_type else 'UNKNOWN'}\n"
+                        f"   Added: {record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"   ID: `{record.id}`"
+                    )
                 
-                # Send the message
-                try:
+                # Split long messages to avoid hitting Telegram's message length limit
+                message = "\n\n".join(response)
+                if len(message) > 4000:
+                    # Split into multiple messages
+                    chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(
+                            chunk,
+                            parse_mode='Markdown',
+                            disable_web_page_preview=True
+                        )
+                else:
                     await update.message.reply_text(
                         message,
                         parse_mode='Markdown',
                         disable_web_page_preview=True
                     )
-                except Exception as e:
-                    # Fallback to plain text if markdown fails
-                    logger.warning(f"Markdown error in list_data: {e}")
-                    plain_message = message.replace('*', '').replace('`', '')
-                    await update.message.reply_text(
-                        plain_message,
-                        disable_web_page_preview=True
-                    )
-                    
+                        
         except Exception as e:
-            logger.error(f"Error in list_data: {e}", exc_info=True)
+            logger.error(f"Error in list_identifiers: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while fetching the watchlist. Please try again later."
+                "❌ An error occurred while fetching the identifier list. Please try again later."
             )
-    
-    async def add_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Add a number to the watchlist."""
+
+    async def remove_identifier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove an identifier from monitoring (admin only)."""
+        if update.effective_user.id not in settings.ADMIN_IDS:
+            await update.message.reply_text("❌ This command is only available to administrators.")
+            return
+            
         if not context.args:
             await update.message.reply_text(
-                "Please provide a number.\n"
-                "Example: `/number 9841234567`\n\n"
-                "Use /list_data to see all watched numbers.",
+                "❌ Please provide an ID to remove. Example: `/remove 123`\n"
+                "Use `/list` to see all identifiers and their IDs.",
                 parse_mode='Markdown'
             )
             return
-                
-        number = ' '.join(context.args)
-        
-        # Add to database
-        with get_db() as db:
-            # Check if already exists
-            exists = db.query(NumberRecord).filter(
-                NumberRecord.number == number,
-                NumberRecord.is_duplicate == False
-            ).first()
-                
-            if exists:
-                await update.message.reply_text("ℹ️ This number is already in the watchlist.")
-                return
+            
+        try:
+            record_id = int(context.args[0])
+            with get_db() as db:
+                # Find and delete the record
+                record = db.query(IdentifierRecord).get(record_id)
+                if record:
+                    db.delete(record)
+                    db.commit()
+                    await update.message.reply_text(
+                        f"✅ Successfully removed identifier: `{record.identifier}`",
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"Identifier {record_id} removed by admin {update.effective_user.id}")
+                else:
+                    await update.message.reply_text("❌ No identifier found with that ID.")
                     
-            # Add new number
-            new_record = NumberRecord(
-                number=number,
-                user_id=update.effective_user.id,
-                group_id=str(update.effective_chat.id) if update.effective_chat else None,
-                is_duplicate=False
+        except ValueError:
+            await update.message.reply_text("❌ Invalid ID format. Please provide a numeric ID.")
+        except Exception as e:
+            logger.error(f"Error in remove_identifier: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ An error occurred while removing the identifier. Please try again later."
             )
-            db.add(new_record)
-            db.commit()
-                
-            await update.message.reply_text("✅ Number added to watchlist successfully!")
-    
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info(f"handle_message: chat_id={update.effective_chat.id if update.effective_chat else None}, chat_type={update.effective_chat.type if update.effective_chat else None}, text={update.message.text if update.message else None}")
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle any message that contains text but is not a command."""
         if not update.message or not update.message.text:
             return
+            
         message = update.message
-        text = message.text
-        # Skip if message is from a channel
-        if message.sender_chat and message.sender_chat.type == "channel":
+        text = message.text.strip()
+        
+        # Skip messages that start with a command
+        if text.startswith('/'):
             return
-        # Extract all unique alphanumeric words/codes (bank account, reference, etc.)
-        unique_texts = re.findall(r'\b[a-zA-Z0-9]+\b', text)
-        if not unique_texts:
-            return
-        for unique_text in unique_texts:
-            await self.process_unique_text(unique_text, message, context.bot)
-
-    async def process_unique_text(self, unique_text: str, message, bot):
-        logger.info(f"process_unique_text: unique_text={unique_text}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+            
+        # Process the message to find potential identifiers
         try:
-            with get_db() as db:
-                existing = db.query(NumberRecord).filter(
-                    NumberRecord.number == unique_text,
-                    NumberRecord.is_duplicate == False
-                ).first()
-                if existing:
-                    logger.info(f"Duplicate found for unique_text={unique_text} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
-                    await self.handle_duplicate(existing, unique_text, message, bot, db)
-                    return True
-                seen_before = db.query(NumberRecord).filter(
-                    NumberRecord.number == unique_text
-                ).first()
-                if not seen_before:
-                    new_record = NumberRecord(
-                        number=unique_text,
-                        group_id=str(message.chat.id) if hasattr(message, 'chat') and message.chat else None,
-                        message_id=message.message_id if hasattr(message, 'message_id') else None,
-                        user_id=message.from_user.id if hasattr(message, 'from_user') and message.from_user else None,
-                        is_duplicate=False
-                    )
-                    db.add(new_record)
-                    db.commit()
-                    logger.info(f"New unique text added to watchlist: {unique_text}")
-                return False
+            # Simple extraction of potential identifiers (this can be enhanced)
+            # For now, we'll just check the entire message as a potential identifier
+            potential_identifiers = [text]
+            
+            for identifier in potential_identifiers:
+                if not identifier.strip():
+                    continue
+                    
+                with get_db() as db:
+                    # Check if this identifier exists in our database
+                    existing = db.query(IdentifierRecord).filter(
+                        IdentifierRecord.identifier == identifier,
+                        IdentifierRecord.is_duplicate == False
+                    ).first()
+                    
+                    if existing:
+                        # This is a duplicate!
+                        await self.handle_duplicate(existing, identifier, message, context.bot, db, context)
+                    
         except Exception as e:
-            logger.error(f"Error in process_unique_text: {e}", exc_info=True)
-            return False
+            logger.error(f"Error in handle_message: {e}", exc_info=True)
+            try:
+                if update.effective_chat:
+                    await update.message.reply_text(
+                        "❌ An error occurred while processing your message. Please try again."
+                    )
+            except Exception as e2:
+                logger.error(f"Failed to send error message: {e2}")
 
-    async def handle_duplicate(self, existing_record, unique_text: str, message, bot, db):
-        logger.info(f"handle_duplicate: unique_text={unique_text}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+    async def handle_duplicate(self, existing_record, identifier: str, message: Message, bot, db: Session, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle a detected duplicate identifier."""
+        logger.info(f"handle_duplicate: identifier={identifier}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+        
         try:
-            duplicate_record = NumberRecord(
-                number=unique_text,
+            # Create a new record for the duplicate
+            identifier_type = self.determine_identifier_type(identifier)
+            
+            duplicate_record = IdentifierRecord(
+                identifier=identifier,
+                identifier_type=identifier_type,
                 group_id=str(message.chat.id) if hasattr(message, 'chat') and message.chat else None,
                 message_id=message.message_id if hasattr(message, 'message_id') else None,
                 user_id=message.from_user.id if hasattr(message, 'from_user') and message.from_user else None,
                 is_duplicate=True
             )
+            
             db.add(duplicate_record)
+            db.flush()  # Flush to get the ID for the duplicate record
+            
+            # Create the duplicate alert
             alert = DuplicateAlert(
-                number=unique_text,
-                original_number_id=existing_record.id,
-                duplicate_number_id=duplicate_record.id,
+                identifier=identifier,
+                original_id=existing_record.id,
+                duplicate_id=duplicate_record.id,
                 status='pending'
             )
+            
             db.add(alert)
             db.commit()
+            
+            # Prepare user information for the alert
             user = message.from_user if hasattr(message, 'from_user') and message.from_user else None
             username = f"@{user.username}" if user and user.username else (user.first_name if user else "a user")
+            
+            # Format the alert message
             alert_text = (
-                "🚨 *DUPLICATE DETECTED* 🚨\n\n"
-                f"⚠️ *HOLD - DO NOT PROCEED* ⚠️\n\n"
-                f"🔑 *Identifier:* `{unique_text}`\n"
-                f"📅 *First Added:* {existing_record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                "🚨 *DUPLICATE IDENTIFIER DETECTED* 🚨\n\n"
+                f"⚠️ *TYPE:* {identifier_type.upper() if identifier_type else 'UNKNOWN'}\n"
+                f"🔑 *Identifier:* `{identifier}`\n"
+                f"📅 *First Seen:* {existing_record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
                 f"👤 *Reported by:* {username}\n\n"
-                "*Please verify this transaction before proceeding.*\n"
+                "*Please verify this transaction before proceeding!*\n"
                 "_This identifier has been previously processed._"
             )
+            
+            # Try to send the alert as a reply to the original message
             try:
                 await message.reply_text(
                     alert_text,
                     parse_mode='Markdown',
-                    reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None
+                    reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None,
+                    disable_web_page_preview=True
                 )
-                logger.info(f"Alert sent for duplicate: {unique_text} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+                logger.info(f"Alert sent for duplicate: {identifier} in chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
+                
             except Exception as e:
                 logger.error(f"Failed to send alert as reply, trying direct message: {e}")
                 try:
@@ -462,118 +390,102 @@ class AIVABot:
                         await bot.send_message(
                             chat_id=chat_id,
                             text=alert_text,
-                            parse_mode='Markdown'
+                            parse_mode='Markdown',
+                            disable_web_page_preview=True
                         )
-                        logger.info(f"Alert sent for duplicate (fallback): {unique_text} in chat_id={chat_id}")
+                        logger.info(f"Alert sent for duplicate (fallback): {identifier} in chat_id={chat_id}")
                 except Exception as e2:
                     logger.error(f"Failed to send duplicate alert: {e2}")
+                    # If all else fails, try to notify admins
+                    await self.notify_admins(
+                        bot,
+                        f"⚠️ Failed to send duplicate alert for identifier {identifier} in chat {chat_id or 'unknown'}: {e2}"
+                    )
+                    
         except Exception as e:
             logger.error(f"Error in handle_duplicate: {e}", exc_info=True)
             try:
                 if hasattr(message, 'chat') and message.chat:
                     await message.reply_text(
-                        "⚠️ An error occurred while processing this identifier. Please contact an admin.",
-                        reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None
+                        "❌ An error occurred while processing this identifier. The admin has been notified.",
+                        parse_mode='Markdown'
                     )
-            except:
-                pass
-                
-        number = ' '.join(context.args)
-        # No validation needed as per requirements
-                
-        # Add to database
-        with get_db() as db:
-            # Check if already exists
-            exists = db.query(NumberRecord).filter_by(
-                number=number,
-                is_duplicate=False
-            ).first()
-                
-            if exists:
-                await update.message.reply_text("ℹ️ This number is already in the watchlist.")
-                return
-                    
-            new_record = NumberRecord(
-                number=number,
-                user_id=update.effective_user.id,
-                is_duplicate=False
-            )
-            db.add(new_record)
-            db.commit()
-                
-        await update.message.reply_text("✅ Number added to watchlist successfully!")
-    
+                # Notify admins about the error
+                await self.notify_admins(
+                    bot,
+                    f"❌ Error in handle_duplicate for identifier {identifier}: {str(e)}"
+                )
+            except Exception as e2:
+                logger.error(f"Failed to send error notification: {e2}")
 
-    
-    async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List all watched phone numbers with proper session management."""
-        try:
-            # Use the database context manager
-            with get_db() as db:
-                # Execute the query and get all results within the session
-                records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
-                
-                if not records:
-                    await update.message.reply_text("No phone numbers in watchlist yet.")
-                    return
-                
-                # Create a formatted message with all records
-                message = "📋 *Watched Numbers*\n\n"
-                for i, record in enumerate(records, 1):
-                    message += f"{i}. `{record.number}`"
-                    if record.notes:
-                        message += f" - {record.notes}"
-                    message += f" (ID: {record.id})\n"
-                
-                # Add help text
-                message += "\nUse `/remove <ID>` to remove a number from the watchlist."
-                
-                # Send the message with Markdown formatting
-                try:
-                    await update.message.reply_text(
-                        message,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
-                    )
-                except Exception as e:
-                    # Fall back to plain text if Markdown fails
-                    logger.warning(f"Markdown error in list_data: {e}")
-                    plain_message = message.replace('*', '').replace('`', '')
-                    await update.message.reply_text(
-                        plain_message,
-                        disable_web_page_preview=True
-                    )
-        
-        except Exception as e:
-            logger.error(f"Error in list_data: {str(e)}", exc_info=True)
+    async def notify_admins(self, bot, message: str) -> None:
+        """Send a notification to all admin users."""
+        for admin_id in settings.ADMIN_IDS:
             try:
-                await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
-            except Exception as send_error:
-                logger.error(f"Failed to send error message: {str(send_error)}")
-    
-    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show bot status and uptime."""
-        uptime = datetime.now() - self.start_time
-        days, seconds = uptime.days, uptime.seconds
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        
-        status_text = (
-            "🤖 *Bot Status*\n"
-            f"• *Uptime:* {days}d {hours}h {minutes}m\n"
-            f"• *Self-ping:* {'✅ Active' if self.self_ping_url else '❌ Inactive'}\n"
-            f"• *Version:* 1.0.0\n\n"
-            "_Use /help to see available commands_"
-        )
-        
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show bot status and statistics."""
         try:
-            await update.message.reply_text(status_text, parse_mode='Markdown')
+            with get_db() as db:
+                # Get counts from database
+                total_identifiers = db.query(IdentifierRecord).count()
+                unique_identifiers = db.query(IdentifierRecord).filter(
+                    IdentifierRecord.is_duplicate == False
+                ).count()
+                duplicates = total_identifiers - unique_identifiers
+                
+                # Get uptime
+                uptime = datetime.now() - self.start_time
+                days, seconds = uptime.days, uptime.seconds
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
+                
+                # Get counts by identifier type
+                type_counts = db.query(
+                    IdentifierRecord.identifier_type,
+                    func.count(IdentifierRecord.id)
+                ).filter(
+                    IdentifierRecord.is_duplicate == False
+                ).group_by(IdentifierRecord.identifier_type).all()
+                
+                # Format type counts
+                type_counts_text = "\n".join(
+                    f"• {t[0].upper() if t[0] else 'UNKNOWN'}: {t[1]}" 
+                    for t in sorted(type_counts, key=lambda x: x[1], reverse=True)
+                )
+                
+                status_text = (
+                    "🤖 *Bot Status*\n\n"
+                    f"• *Uptime:* {days}d {hours}h {minutes}m\n"
+                    f"• *Self-ping:* {'✅ Active' if self.self_ping_url else '❌ Inactive'}\n\n"
+                    f"📊 *Statistics*\n"
+                    f"• *Total Identifiers:* {total_identifiers}\n"
+                    f"• *Unique Identifiers:* {unique_identifiers}\n"
+                    f"• *Duplicates Detected:* {duplicates}\n\n"
+                    f"📝 *Identifier Types*\n{type_counts_text}"
+                )
+                
+                await update.message.reply_text(
+                    status_text,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+                
         except Exception as e:
-            logger.warning(f"Markdown error in status, falling back to plain text: {e}")
-            plain_text = status_text.replace('*', '').replace('_', '')
-            await update.message.reply_text(plain_text)
-    
-    async def self_ping(self, context: ContextTypes.DEFAULT_TYPE):
+            logger.error(f"Error in status: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ An error occurred while fetching status. Please try again later."
+            )
+
+    async def self_ping(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Ping the self-ping URL to keep the bot alive."""
         if not self.self_ping_url:
             return
@@ -582,101 +494,97 @@ class AIVABot:
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.self_ping_url) as response:
                     if response.status == 200:
-                        logger.info("Self-ping successful")
+                        logger.debug("Self-ping successful")
                     else:
                         logger.warning(f"Self-ping failed with status {response.status}")
         except Exception as e:
-            logger.error(f"Error in self-ping: {e}")
-    
+            logger.error(f"Error in self_ping: {e}")
+
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle errors in the telegram.ext application with detailed logging."""
-        # Log the full error with traceback
-        logger.error("Exception while handling an update:", exc_info=context.error)
+        # Log the error before we do anything else
+        logger.error(
+            "Exception while handling an update:",
+            exc_info=context.error
+        )
         
-        # Get detailed error information
-        error_type = type(context.error).__name__
-        error_msg = str(context.error) or 'No error message'
+        # Try to get more context about the error
+        error_info = {
+            'error': str(context.error),
+            'error_type': context.error.__class__.__name__,
+            'update': str(update),
+            'user_data': str(context.user_data),
+            'chat_data': str(context.chat_data)
+        }
         
-        # Log the error with more context
-        logger.error(f"Error type: {error_type}")
-        logger.error(f"Error message: {error_msg}")
+        logger.error(f"Error details: {error_info}")
         
-        # Log the update that caused the error
-        if update:
-            update_dict = update.to_dict() if hasattr(update, 'to_dict') else str(update)
-            logger.error(f"Update that caused the error: {update_dict}")
-        
-        # Only send error message if it's a message update
-        if update and hasattr(update, 'message') and update.message:
-            try:
-                # Send a more detailed error message to the user
-                await update.message.reply_text(
-                    f"❌ Error ({error_type}): {error_msg[:100]}...\n\n"
-                    "The error has been logged and will be investigated."
+        # Try to notify the user about the error if we have a chat context
+        try:
+            if update and hasattr(update, 'effective_chat') and update.effective_chat:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ An error occurred while processing your request. The admin has been notified."
                 )
-            except Exception as e:
-                logger.error(f"Error sending error message: {e}")
-        else:
-            logger.error("No message in update to reply to")
-    
+                
+            # Notify all admins about the error
+            admin_message = (
+                "⚠️ *Error in bot*\n\n"
+                f"*Error:* {context.error.__class__.__name__}\n"
+                f"*Details:* {str(context.error)}\n\n"
+                f"*Update:* {str(update)[:200]}..."
+            )
+            
+            await self.notify_admins(context.bot, admin_message)
+            
+        except Exception as e:
+            logger.error(f"Error in error handler while notifying: {e}")
 
 
 def get_application():
     """Create and configure the bot application."""
-    # Initialize the database
-    init_db()
+    token = os.getenv('TELEGRAM_TOKEN')
+    if not token:
+        raise ValueError("TELEGRAM_TOKEN environment variable is not set")
     
-    # Create the bot
-    bot = AIVABot()
+    bot = AIVABot(token)
     return bot.application
+
 
 def main():
     """Start the bot."""
+    # Initialize database
     try:
-        # Initialize database first
-        from database.database import init_db
-        from database.models import Base
-        from database.database import engine
-        
-        # Ensure tables are created
-        Base.metadata.create_all(bind=engine)
         init_db()
-        
-        logger.info("Database initialization complete")
+        logger.info("Database initialized")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
     
+    # Get the application
     application = get_application()
     
-    # Check if running on Render
-    is_render = os.getenv('RENDER', '').lower() == 'true'
-    
-    if is_render or os.getenv('USE_WEBHOOK', '').lower() == 'true':
+    # Start the Bot
+    if os.getenv('WEBHOOK_MODE', '').lower() == 'true':
         # Webhook mode for production
-        logger.info("Starting in webhook mode")
-        port = int(os.environ.get('PORT', 5000))
+        port = int(os.getenv('PORT', 8080))
         webhook_url = os.getenv('WEBHOOK_URL')
         
         if not webhook_url:
-            logger.warning("WEBHOOK_URL not set, using polling instead")
-            application.run_polling()
-        else:
-            # Set webhook
-            async def set_webhook():
-                await application.bot.set_webhook(url=f"{webhook_url}/webhook")
+            raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
             
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                secret_token=os.getenv('WEBHOOK_SECRET', 'your-secret-token'),
-                webhook_url=webhook_url,
-                drop_pending_updates=True
-            )
+        # Set webhook
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            secret_token=os.getenv('WEBHOOK_SECRET'),
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
     else:
         # Polling mode for development
-        logger.info("Starting in polling mode")
         application.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
