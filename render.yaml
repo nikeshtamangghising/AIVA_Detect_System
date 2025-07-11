@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: aiva-detect-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        fromService:
+          type: secret
+          name: BOT_TOKEN
+      - key: DATABASE_URL
+        fromService:
+          type: secret
+          name: DATABASE_URL
+      - key: LOG_LEVEL
+        value: INFO
+    plan: free
