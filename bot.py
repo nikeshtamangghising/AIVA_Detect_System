@@ -422,16 +422,33 @@ class AIVABot:
 
     async def notify_admins(self, bot, message: str) -> None:
         """Send a notification to all admin users."""
-        for admin_id in settings.ADMIN_IDS:
+        if not hasattr(settings, 'admin_ids_list'):
+            logger.error("ADMIN_IDS not properly configured in settings")
+            return
+            
+        admin_ids = settings.admin_ids_list
+        if not admin_ids:
+            logger.warning("No admin IDs configured in ADMIN_IDS")
+            return
+            
+        for admin_id in admin_ids:
+            if not admin_id or not str(admin_id).isdigit():
+                logger.warning(f"Skipping invalid admin ID: {admin_id}")
+                continue
+                
             try:
                 await bot.send_message(
-                    chat_id=admin_id,
+                    chat_id=int(admin_id),
                     text=message,
                     parse_mode='Markdown',
                     disable_web_page_preview=True
                 )
+                logger.debug(f"Notification sent to admin {admin_id}")
             except Exception as e:
-                logger.error(f"Failed to notify admin {admin_id}: {e}")
+                if "chat not found" in str(e).lower():
+                    logger.warning(f"Admin chat not found (ID: {admin_id}). They may need to start a chat with the bot first.")
+                else:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show bot status and statistics."""
@@ -565,7 +582,7 @@ def get_application():
 
 def main():
     """Start the bot."""
-    # Initialize database
+    # Initialize database first
     try:
         init_db()
         logger.info("Database initialized")
@@ -576,26 +593,38 @@ def main():
     # Get the application
     application = get_application()
     
-    # Start the Bot
-    if os.getenv('WEBHOOK_MODE', '').lower() == 'true':
+    # Determine running mode
+    is_webhook = os.getenv('WEBHOOK_MODE', '').lower() == 'true'
+    
+    if is_webhook:
         # Webhook mode for production
         port = int(os.getenv('PORT', 8080))
         webhook_url = os.getenv('WEBHOOK_URL')
+        secret_token = os.getenv('WEBHOOK_SECRET')
         
         if not webhook_url:
             raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
-            
-        # Set webhook
+        
+        # Log webhook configuration
+        logger.info(f"Starting in WEBHOOK mode on port {port}")
+        logger.info(f"Webhook URL: {webhook_url}")
+        
+        # Configure webhook
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            secret_token=os.getenv('WEBHOOK_SECRET'),
+            secret_token=secret_token,
             webhook_url=webhook_url,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
         )
     else:
         # Polling mode for development
-        application.run_polling(drop_pending_updates=True)
+        logger.info("Starting in POLLING mode")
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
 
 
 if __name__ == "__main__":
