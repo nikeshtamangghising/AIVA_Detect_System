@@ -29,6 +29,8 @@ class AIVABot:
         self.token = token
         self.start_time = datetime.now()
         self.self_ping_url = os.getenv('SELF_PING_URL')
+        self.application = Application.builder().token(token).build()
+        self._setup_handlers()
         logger.info("Bot initialized")
         
         # Initialize database
@@ -39,19 +41,18 @@ class AIVABot:
             logger.error(f"Failed to initialize database: {e}")
             raise
 
-    async def post_init(self, application: Application) -> None:
+    async def post_init(self) -> None:
         """Post-initialization hook."""
-        self.application = application
-        await self.setup_commands(application)
-        self._setup_handlers()
-        logger.info("Bot initialized")
+        await self.setup_commands()
         
         # Add job queue for self-ping
         self.job_queue = self.application.job_queue
         if self.job_queue and self.self_ping_url:
             self.job_queue.run_repeating(self.self_ping, interval=300.0, first=10.0)
+            
+        logger.info("Bot post-initialization complete")
 
-    async def setup_commands(self, application: Application) -> None:
+    async def setup_commands(self) -> None:
         """Set up bot commands."""
         commands = [
             BotCommand("start", "Start the bot"),
@@ -60,7 +61,7 @@ class AIVABot:
             BotCommand("list_data", "List all monitored numbers"),
             BotCommand("status", "Show bot status"),
         ]
-        await application.bot.set_my_commands(commands)
+        await self.application.bot.set_my_commands(commands)
 
     def _setup_handlers(self):
         """Setup all command and message handlers."""
@@ -564,21 +565,11 @@ class AIVABot:
             logger.error(f"Error in error handler while notifying: {e}")
 
 
-def get_application():
-    """Create and configure the bot application."""
+def get_application() -> Application:
+    """Create and configure the Telegram application."""
     token = os.getenv('BOT_TOKEN')
     if not token:
-        error_msg = (
-            "Error: BOT_TOKEN environment variable is not set.\n\n"
-            "To fix this:\n"
-            "1. Get your bot token from @BotFather on Telegram\n"
-            "2. Add it to your environment variables:\n"
-            "   - Local: Set BOT_TOKEN='your_token_here' in .env file\n"
-            "   - Render: Add it in the Environment tab of your service settings\n"
-            "   - Format: BOT_TOKEN=1234567890:ABCdefGHIjklmNOPQrstUVWXYZ"
-        )
-        logger.error(error_msg)
-        raise ValueError(error_msg)
+        raise ValueError("BOT_TOKEN environment variable is not set")
     
     bot = AIVABot(token)
     return bot.application
