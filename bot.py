@@ -302,27 +302,66 @@ class AIVABot:
 
     
     async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List all watched numbers."""
-        with get_db() as db:
+        """List all watched phone numbers with proper session management."""
+        db = None
+        try:
+            # Get a database session
+            db = next(get_db())
+            
+            # Execute the query and get all results within the session
             records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
-                
-        if not records:
-            await update.message.reply_text("No numbers in watchlist yet.")
-            return
-                
-        # Format message
-        message = "🔢 *Watched Numbers* 🔢\n\n"
+            
+            if not records:
+                await update.message.reply_text("No phone numbers in watchlist yet.")
+                return
+            
+            # Extract all data we need while the session is still active
+            formatted_records = []
+            for record in records:
+                # Get all attributes while the session is active
+                record_data = {
+                    'number': str(record.number) if record.number else '',
+                    'created_at': record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown',
+                    'id': str(record.id) if hasattr(record, 'id') else 'N/A'
+                }
+                formatted_records.append(record_data)
+            
+            # Close the session before sending the message
+            db.close()
+            db = None
+            
+            # Format the message
+            message = "📱 *Watched Phone Numbers* 📱\n\n"
+            
+            for i, record in enumerate(formatted_records[:50], 1):
+                # Escape Markdown special characters
+                safe_number = record['number'].replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
+                message += f"{i}. `{safe_number}` (added {record['created_at']})\n"
+            
+            if len(formatted_records) > 50:
+                message += f"\n... and {len(formatted_records) - 50} more phone numbers"
+            
+            # Send the message with error handling
+            try:
+                await update.message.reply_text(message, parse_mode='Markdown')
+            except Exception as e:
+                logger.warning(f"Markdown error, falling back to plain text: {e}")
+                plain_message = message.replace('*', '').replace('`', '').replace('_', '')
+                await update.message.reply_text(plain_message)
         
-        for i, record in enumerate(records[:50], 1):  # Limit to 50 numbers
-            message += f"{i}. `{record.number}`"
-            if record.created_at:
-                message += f" (added {record.created_at.strftime('%Y-%m-%d %H:%M')})"
-            message += "\n"
-                    
-        if len(records) > 50:
-            message += f"\n... and {len(records) - 50} more numbers"
-                
-        await update.message.reply_text(message, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error in list_data: {str(e)}", exc_info=True)
+            try:
+                await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
+            except Exception as send_error:
+                logger.error(f"Failed to send error message: {str(send_error)}")
+        finally:
+            # Ensure the database session is always closed
+            if db is not None:
+                try:
+                    db.close()
+                except Exception as e:
+                    logger.error(f"Error closing database session: {str(e)}")
     
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show bot status and uptime."""
@@ -338,7 +377,13 @@ class AIVABot:
             f"• *Version:* 1.0.0\n\n"
             "_Use /help to see available commands_"
         )
-        await update.message.reply_text(status_text, parse_mode='Markdown')
+        
+        try:
+            await update.message.reply_text(status_text, parse_mode='Markdown')
+        except Exception as e:
+            logger.warning(f"Markdown error in status, falling back to plain text: {e}")
+            plain_text = status_text.replace('*', '').replace('_', '')
+            await update.message.reply_text(plain_text)
     
     async def self_ping(self, context: ContextTypes.DEFAULT_TYPE):
         """Ping the self-ping URL to keep the bot alive."""
@@ -383,144 +428,6 @@ class AIVABot:
                 )
             except Exception as e:
                 logger.error(f"Error sending error message: {e}")
-    
-async def add_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a phone number to the watchlist."""
-    if not context.args:
-        await update.message.reply_text(
-            "Please provide a phone number.\n"
-            "Example: `/add_phone +9779841234567`",
-            parse_mode='Markdown'
-        )
-        return
-            
-    phone = ' '.join(context.args)
-    # No validation needed as per requirements
-            
-    # Add to database
-    with get_db() as db:
-        # Check if already exists
-        exists = db.query(PhoneRecord).filter_by(
-            phone_number=phone,
-            is_duplicate=False
-        ).first()
-            
-        if exists:
-            await update.message.reply_text("ℹ️ This phone number is already in the watchlist.")
-            return
-                
-        new_record = PhoneRecord(
-            phone_number=phone,
-            user_id=update.effective_user.id,
-            is_duplicate=False
-        )
-        db.add(new_record)
-        db.commit()
-            
-    await update.message.reply_text("✅ Phone number added to watchlist successfully!")
-    
-
-    
-async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all watched phone numbers with proper session management."""
-    db = None
-    try:
-        # Get a database session
-        db = next(get_db())
-        
-        # Execute the query and get all results within the session
-        records = db.query(NumberRecord).filter_by(is_duplicate=False).order_by(NumberRecord.created_at.desc()).all()
-        
-        if not records:
-            await update.message.reply_text("No phone numbers in watchlist yet.")
-            return
-        
-        # Extract all data we need while the session is still active
-        formatted_records = []
-        for record in records:
-            # Get all attributes while the session is active
-            record_data = {
-                'number': str(record.number) if record.number else '',
-                'created_at': record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown',
-                'id': str(record.id) if hasattr(record, 'id') else 'N/A'
-            }
-            formatted_records.append(record_data)
-        
-        # Close the session before sending the message
-        db.close()
-        db = None
-        
-        # Format the message
-        message = "📱 *Watched Phone Numbers* 📱\n\n"
-        
-        for i, record in enumerate(formatted_records[:50], 1):
-            # Escape Markdown special characters
-            safe_number = record['number'].replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
-            message += f"{i}. `{safe_number}` (added {record['created_at']})\n"
-        
-        if len(formatted_records) > 50:
-            message += f"\n... and {len(formatted_records) - 50} more phone numbers"
-        
-        # Send the message with error handling
-        try:
-            await update.message.reply_text(message, parse_mode='Markdown')
-        except Exception as e:
-            logger.warning(f"Markdown error, falling back to plain text: {e}")
-            plain_message = message.replace('*', '').replace('`', '').replace('_', '')
-            await update.message.reply_text(plain_message)
-    
-    except Exception as e:
-        logger.error(f"Error in list_data: {str(e)}", exc_info=True)
-        try:
-            await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
-        except Exception as send_error:
-            logger.error(f"Failed to send error message: {str(send_error)}")
-    finally:
-        # Ensure the database session is always closed
-        if db is not None:
-            try:
-                db.close()
-            except Exception as e:
-                logger.error(f"Error closing database session: {str(e)}")
-    
-async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show bot status and uptime."""
-    uptime = datetime.now() - self.start_time
-    days, seconds = uptime.days, uptime.seconds
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-        
-    status_text = (
-        "🤖 *Bot Status*\n"
-        f"• *Uptime:* {days}d {hours}h {minutes}m\n"
-        f"• *Self-ping:* {'✅ Active' if self.self_ping_url else '❌ Inactive'}\n"
-        f"• *Version:* 1.0.0\n\n"
-        "_Use /help to see available commands_"
-    )
-    await update.message.reply_text(status_text, parse_mode='Markdown')
-    
-async def self_ping(self, context: ContextTypes.DEFAULT_TYPE):
-    """Ping the self-ping URL to keep the bot alive."""
-    if not self.self_ping_url:
-        return
-            
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.self_ping_url) as response:
-                if response.status == 200:
-                    logger.info("Self-ping successful")
-                else:
-                    logger.warning(f"Self-ping failed with status {response.status}")
-    except Exception as e:
-        logger.error(f"Error in self-ping: {e}")
-    
-async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle errors in the telegram.ext application with detailed logging."""
-    # Log the full error with traceback
-    logger.error("Exception while handling an update:", exc_info=context.error)
-        
-    # Get detailed error information
-    error_type = type(context.error).__name__
     error_msg = str(context.error) or 'No error message'
         
     # Log the error with more context
