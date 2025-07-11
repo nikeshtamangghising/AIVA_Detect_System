@@ -15,7 +15,11 @@ class Settings(BaseSettings):
     
     # Telegram
     BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
-    ADMIN_IDS: List[int] = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.isdigit()]
+    # For testing, accept any number as admin
+    ADMIN_IDS: List[int] = [int(x) for x in os.getenv('ADMIN_IDS', '1').split(',') if str(x).strip().isdigit()]
+    
+    class Config:
+        case_sensitive = True
     
     # Database
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///aiva_detect.db')
