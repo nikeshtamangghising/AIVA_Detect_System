@@ -331,31 +331,33 @@ class AIVABot:
         logger.info(f"handle_duplicate: identifier={identifier}, chat_id={message.chat.id if hasattr(message, 'chat') and message.chat else None}")
         
         try:
-            # Create a new record for the duplicate
-            identifier_type = self.determine_identifier_type(identifier)
+            # Start a new nested transaction that we can roll back on error
+            db.begin_nested()
             
-            duplicate_record = IdentifierRecord(
-                identifier=identifier,
-                identifier_type=identifier_type,
-                group_id=str(message.chat.id) if hasattr(message, 'chat') and message.chat else None,
-                message_id=message.message_id if hasattr(message, 'message_id') else None,
-                user_id=message.from_user.id if hasattr(message, 'from_user') and message.from_user else None,
-                is_duplicate=True
-            )
+            try:
+                # Instead of creating a new record, we'll use the existing one
+                # but still create an alert to track the duplicate detection
+                
+                # Create the duplicate alert
+                alert = DuplicateAlert(
+                    identifier=identifier,
+                    original_id=existing_record.id,
+                    status='pending'
+                )
+                
+                db.add(alert)
+                db.commit()
+                logger.info(f"Successfully created duplicate alert for identifier: {identifier}")
+                
+            except Exception as e:
+                # If anything goes wrong, roll back the nested transaction
+                db.rollback()
+                logger.error(f"Error creating duplicate alert for {identifier}: {e}", exc_info=True)
+                # Re-raise to be caught by the outer exception handler
+                raise
             
-            db.add(duplicate_record)
-            db.flush()  # Flush to get the ID for the duplicate record
-            
-            # Create the duplicate alert
-            alert = DuplicateAlert(
-                identifier=identifier,
-                original_id=existing_record.id,
-                duplicate_id=duplicate_record.id,
-                status='pending'
-            )
-            
-            db.add(alert)
-            db.commit()
+            # Get identifier type from the existing record
+            identifier_type = existing_record.identifier_type or self.determine_identifier_type(identifier)
             
             # Prepare user information for the alert
             user = message.from_user if hasattr(message, 'from_user') and message.from_user else None
@@ -543,16 +545,16 @@ class AIVABot:
 
 def get_application():
     """Create and configure the bot application."""
-    token = os.getenv('TELEGRAM_TOKEN')
+    token = os.getenv('BOT_TOKEN')
     if not token:
         error_msg = (
-            "Error: TELEGRAM_TOKEN environment variable is not set.\n\n"
+            "Error: BOT_TOKEN environment variable is not set.\n\n"
             "To fix this:\n"
             "1. Get your bot token from @BotFather on Telegram\n"
             "2. Add it to your environment variables:\n"
-            "   - Local: Set TELEGRAM_TOKEN='your_token_here' in .env file\n"
+            "   - Local: Set BOT_TOKEN='your_token_here' in .env file\n"
             "   - Render: Add it in the Environment tab of your service settings\n"
-            "   - Format: TELEGRAM_TOKEN=1234567890:ABCdefGHIjklmNOPQrstUVWXYZ"
+            "   - Format: BOT_TOKEN=1234567890:ABCdefGHIjklmNOPQrstUVWXYZ"
         )
         logger.error(error_msg)
         raise ValueError(error_msg)
