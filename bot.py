@@ -58,6 +58,7 @@ class AIVABot:
         # Support both /list_data and /listdata
         self.application.add_handler(CommandHandler("list_data", self.list_data))
         self.application.add_handler(CommandHandler("listdata", self.list_data))  # Alias without underscore
+        self.application.add_handler(CommandHandler("remove", self.remove_number))
         self.application.add_handler(CommandHandler("status", self.status))
         
         # Message handler for phone number detection
@@ -74,8 +75,9 @@ class AIVABot:
         commands = [
             ("start", "Start the bot"),
             ("help", "Show help information"),
-            ("number", "Add phone number to watchlist"),
-            ("list_data", "List all watched phone numbers"),
+            ("number", "Add number to watchlist"),
+            ("list_data", "List all watched numbers"),
+            ("remove", "Remove a number from watchlist"),
         ]
         
         # Set commands using set_my_commands
@@ -105,12 +107,13 @@ class AIVABot:
             "• /help - Show help\n"
             "• /status - Show status\n\n"
             "*Admin Commands:*\n"
-            "• /number <number> - Add number\n"
-            "• /list_data - List numbers\n\n"
+            "• /number <number> - Add number to watchlist\n"
+            "• /list_data - List all watched numbers\n"
+            "• /remove <ID> - Remove a number from watchlist\n\n"
             "*How It Works:*\n"
-            "1. Add me to your group\n"
-            "2. I'll detect numbers\n"
-            "3. I'll notify on duplicates"
+            "1. Add numbers with `/number <number>`\n"
+            "2. Check numbers with `/list_data`\n"
+            "3. I'll notify about duplicates"
         )
         try:
             await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -118,6 +121,39 @@ class AIVABot:
             # Fallback to plain text if Markdown fails
             logging.warning(f"Markdown error: {e}")
             await update.message.reply_text(help_text.replace('*', '').replace('_', ''), parse_mode=None)
+            
+    async def remove_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Remove a number from the watchlist by ID."""
+        if not context.args:
+            await update.message.reply_text(
+                "Please provide the ID of the number to remove.\n"
+                "Example: `/remove 123`\n\n"
+                "Use `/list_data` to see all numbers and their IDs.",
+                parse_mode='Markdown'
+            )
+            return
+            
+        try:
+            number_id = int(context.args[0])
+            with get_db() as db:
+                # Try to find the number record
+                record = db.query(NumberRecord).filter_by(id=number_id, is_duplicate=False).first()
+                
+                if not record:
+                    await update.message.reply_text("❌ Number not found. Use `/list_data` to see available numbers.", parse_mode='Markdown')
+                    return
+                
+                # Delete the record
+                db.delete(record)
+                db.commit()
+                
+                await update.message.reply_text(f"✅ Successfully removed number `{record.number}` from the watchlist.", parse_mode='Markdown')
+                
+        except ValueError:
+            await update.message.reply_text("❌ Invalid ID. Please provide a valid number ID.")
+        except Exception as e:
+            logger.error(f"Error removing number: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ An error occurred while removing the number. Please try again.")
     
     async def new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new chat members event."""
@@ -319,7 +355,10 @@ class AIVABot:
                     message += f"{i}. `{record.number}`"
                     if record.notes:
                         message += f" - {record.notes}"
-                    message += "\n"
+                    message += f" (ID: {record.id})\n"
+                
+                # Add help text
+                message += "\nUse `/remove <ID>` to remove a number from the watchlist."
                 
                 # Send the message with Markdown formatting
                 try:
@@ -336,14 +375,6 @@ class AIVABot:
                         plain_message,
                         disable_web_page_preview=True
                     )
-            
-            # Send the message with error handling
-            try:
-                await update.message.reply_text(message, parse_mode='Markdown')
-            except Exception as e:
-                logger.warning(f"Markdown error, falling back to plain text: {e}")
-                plain_message = message.replace('*', '').replace('`', '').replace('_', '')
-                await update.message.reply_text(plain_message)
         
         except Exception as e:
             logger.error(f"Error in list_data: {str(e)}", exc_info=True)
@@ -351,13 +382,6 @@ class AIVABot:
                 await update.message.reply_text("❌ An error occurred while fetching the number list. Please try again.")
             except Exception as send_error:
                 logger.error(f"Failed to send error message: {str(send_error)}")
-        finally:
-            # Ensure the database session is always closed
-            if db is not None:
-                try:
-                    db.close()
-                except Exception as e:
-                    logger.error(f"Error closing database session: {str(e)}")
     
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show bot status and uptime."""
