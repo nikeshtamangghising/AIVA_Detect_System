@@ -26,11 +26,9 @@ logger = logging.getLogger(__name__)
 class AIVABot:
     def __init__(self, token: str):
         """Initialize the bot."""
-        self.application = Application.builder().token(token).build()
+        self.token = token
         self.start_time = datetime.now()
         self.self_ping_url = os.getenv('SELF_PING_URL')
-        self._setup_handlers()
-        self._setup_commands()
         logger.info("Bot initialized")
         
         # Initialize database
@@ -40,6 +38,29 @@ class AIVABot:
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
+
+    async def post_init(self, application: Application) -> None:
+        """Post-initialization hook."""
+        self.application = application
+        await self.setup_commands(application)
+        self._setup_handlers()
+        logger.info("Bot initialized")
+        
+        # Add job queue for self-ping
+        self.job_queue = self.application.job_queue
+        if self.job_queue and self.self_ping_url:
+            self.job_queue.run_repeating(self.self_ping, interval=300.0, first=10.0)
+
+    async def setup_commands(self, application: Application) -> None:
+        """Set up bot commands."""
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help information"),
+            BotCommand("number", "Add a number to monitor"),
+            BotCommand("list_data", "List all monitored numbers"),
+            BotCommand("status", "Show bot status"),
+        ]
+        await application.bot.set_my_commands(commands)
 
     def _setup_handlers(self):
         """Setup all command and message handlers."""
@@ -57,23 +78,6 @@ class AIVABot:
         
         # Add error handler
         self.application.add_error_handler(self.error_handler)
-        
-        # Add job queue for self-ping
-        self.job_queue = self.application.job_queue
-        if self.job_queue and self.self_ping_url:
-            self.job_queue.run_repeating(self.self_ping, interval=300.0, first=10.0)
-
-    def _setup_commands(self):
-        """Setup bot commands."""
-        commands = [
-            ("start", "Start the bot"),
-            ("help", "Show help information"),
-            ("number", "Add a number to monitor (e.g., /number 1234567890)"),
-            ("list", "List all monitored numbers"),
-            ("status", "Show bot status"),
-            ("remove", "Remove a number (admin only)")
-        ]
-        self.application.bot.set_my_commands(commands)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a welcome message when the command /start is issued."""
@@ -593,31 +597,64 @@ def main():
     # Get the application
     application = get_application()
     
-    # Determine running mode
-    is_webhook = os.getenv('WEBHOOK_MODE', '').lower() == 'true'
-    
-    if is_webhook:
+    # Always use webhook in production (Render)
+    if 'RENDER' in os.environ or os.getenv('WEBHOOK_MODE', '').lower() == 'true':
         # Webhook mode for production
-        port = int(os.getenv('PORT', 8080))
+        port = int(os.getenv('PORT', 10000))
         webhook_url = os.getenv('WEBHOOK_URL')
-        secret_token = os.getenv('WEBHOOK_SECRET')
+        secret_token = os.getenv('WEBHOOK_SECRET', 'your-webhook-secret')
         
         if not webhook_url:
-            raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
+            # Try to get webhook URL from Render environment
+            render_external_url = os.getenv('RENDER_EXTERNAL_URL')
+            if render_external_url:
+                webhook_url = f"{render_external_url}/webhook"
+            else:
+                raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
         
         # Log webhook configuration
         logger.info(f"Starting in WEBHOOK mode on port {port}")
         logger.info(f"Webhook URL: {webhook_url}")
         
-        # Configure webhook
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            secret_token=secret_token,
-            webhook_url=webhook_url,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        # Set webhook
+        async def set_webhook():
+            await application.bot.set_webhook(
+                url=f"{webhook_url}",
+                secret_token=secret_token,
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+            logger.info("Webhook set successfully")
+        
+        # Run the application with webhook
+        async def run_webhook():
+            await application.initialize()
+            await set_webhook()
+            await application.start()
+            await application.updater.start_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="",
+                webhook_url=webhook_url,
+                secret_token=secret_token,
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+            logger.info("Bot is running in webhook mode")
+            
+            # Keep the application running
+            while True:
+                await asyncio.sleep(3600)  # Sleep for 1 hour
+        
+        # Start the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(run_webhook())
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+            loop.run_until_complete(application.stop())
+            loop.run_until_complete(application.shutdown())
+            loop.close()
     else:
         # Polling mode for development
         logger.info("Starting in POLLING mode")

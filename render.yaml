@@ -2,6 +2,8 @@ services:
   - type: web
     name: aiva-detect-bot
     env: python
+    region: singapore  # Choose a region closest to your users
+    plan: free  # Or 'standard' for production
     buildCommand: |
       pip install -r requirements.txt
       python -c "from database.database import Base, engine; Base.metadata.create_all(bind=engine)"
@@ -9,15 +11,22 @@ services:
     envVars:
       - key: RENDER
         value: true
+      - key: WEBHOOK_MODE
+        value: "true"
       - key: BOT_TOKEN
         fromService:
           type: secret
           name: BOT_TOKEN
       - key: DATABASE_URL
-        value: sqlite:///instance/aiva_detect.db
+        value: sqlite:///data/aiva_detect.db
       - key: LOG_LEVEL
-        value: INFO
-      - key: WEBHOOK_URL
+        value: DEBUG
+      - key: ADMIN_IDS
+        value: ""  # Set your admin Telegram IDs here, comma-separated
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: PORT
+        value: 10000
         fromService:
           type: secret
           name: WEBHOOK_URL
