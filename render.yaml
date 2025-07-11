@@ -7,6 +7,8 @@ services:
       python -c "from database.database import Base, engine; Base.metadata.create_all(bind=engine)"
     startCommand: python bot.py
     envVars:
+      - key: RENDER
+        value: true
       - key: BOT_TOKEN
         fromService:
           type: secret
@@ -15,4 +17,12 @@ services:
         value: sqlite:///instance/aiva_detect.db
       - key: LOG_LEVEL
         value: INFO
+      - key: WEBHOOK_URL
+        fromService:
+          type: secret
+          name: WEBHOOK_URL
+      - key: WEBHOOK_SECRET
+        fromService:
+          type: secret
+          name: WEBHOOK_SECRET
     plan: free

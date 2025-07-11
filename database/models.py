@@ -4,11 +4,11 @@ from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
 
-class PhoneRecord(Base):
-    __tablename__ = "phone_records"
+class NumberRecord(Base):
+    __tablename__ = "number_records"
     
     id = Column(Integer, primary_key=True, index=True)
-    phone_number = Column(String(20), nullable=False, unique=True, index=True)
+    number = Column(String(20), nullable=False, unique=True, index=True)
     notes = Column(Text, nullable=True)
     group_id = Column(String(100), nullable=True)
     message_id = Column(Integer, nullable=True)
@@ -21,8 +21,8 @@ class DuplicateAlert(Base):
     __tablename__ = "duplicate_alerts"
     
     id = Column(Integer, primary_key=True, index=True)
-    phone_number = Column(String(20), nullable=False)
-    original_phone_id = Column(Integer, ForeignKey('phone_records.id'), nullable=False)
-    duplicate_phone_id = Column(Integer, ForeignKey('phone_records.id'), nullable=False)
+    number = Column(String(20), nullable=False)
+    original_number_id = Column(Integer, ForeignKey('number_records.id'), nullable=False)
+    duplicate_number_id = Column(Integer, ForeignKey('number_records.id'), nullable=False)
     status = Column(String(20), default="pending")  # pending, resolved
     created_at = Column(DateTime, default=datetime.utcnow)
