@@ -2,7 +2,9 @@ services:
   - type: web
     name: aiva-detect-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      python -c "from database.database import Base, engine; Base.metadata.create_all(bind=engine)"
     startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
@@ -10,9 +12,7 @@ services:
           type: secret
           name: BOT_TOKEN
       - key: DATABASE_URL
-        fromService:
-          type: secret
-          name: DATABASE_URL
+        value: sqlite:///instance/aiva_detect.db
       - key: LOG_LEVEL
         value: INFO
     plan: free

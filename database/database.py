@@ -1,20 +1,18 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import sessionmaker
 from config import settings
 import logging
-from contextlib import contextmanager
+import os
+
+# Ensure the instance folder exists
+os.makedirs('instance', exist_ok=True)
 
 # Configure logging
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# Configure SQLite specific parameters
-connect_args = {}
-if settings.DATABASE_URL.startswith('sqlite'):
-    connect_args = {'check_same_thread': False}
-
-# Create database engine
+# Create SQLite database engine with connection pool settings
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args=connect_args,
