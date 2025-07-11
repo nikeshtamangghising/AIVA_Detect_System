@@ -202,6 +202,46 @@ class AIVABot:
                 logger.error(f"Failed to send admin message: {e}")
     
     # Payment detection and database methods will be added here
+    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show bot status and statistics."""
+        try:
+            with get_db() as db:
+                # Get counts from database
+                total_numbers = db.query(NumberRecord).count()
+                unique_numbers = db.query(NumberRecord).filter(
+                    NumberRecord.is_duplicate == False
+                ).count()
+                duplicates = total_numbers - unique_numbers
+                
+                # Calculate uptime
+                uptime = datetime.now() - self.start_time
+                hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+                minutes, seconds = divmod(remainder, 60)
+                days, hours = divmod(hours, 24)
+                
+                # Format status message
+                status_message = (
+                    f"🤖 *AIVA Detect System Status*\n\n"
+                    f"🕒 *Uptime:* {days}d {hours}h {minutes}m {seconds}s\n"
+                    f"📊 *Numbers Tracked:* {unique_numbers}\n"
+                    f"🔄 *Duplicates Detected:* {duplicates}\n"
+                    f"📅 *Last Started:* {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    "✅ *Bot is running smoothly*"
+                )
+                
+                # Send status message
+                await update.message.reply_text(
+                    status_message,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in status command: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ Could not retrieve status information. Please try again later."
+            )
+    
     async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all watched numbers."""
         try:
