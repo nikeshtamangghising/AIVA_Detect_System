@@ -101,18 +101,23 @@ class AIVABot:
         help_text = (
             "🤖 *AIVA Detect System* 🤖\n\n"
             "*Available Commands:*\n"
-            "• /start - Start the bot and see welcome message\n"
-            "• /help - Show this help message\n"
-            "• /status - Show bot status and uptime\n\n"
+            "• /start - Start the bot\n"
+            "• /help - Show help\n"
+            "• /status - Show status\n\n"
             "*Admin Commands:*\n"
-            "• /number <number> - Add number to watchlist\n"
-            "• /list_data - List all watched numbers\n\n"
+            "• /number <number> - Add number\n"
+            "• /list_data - List numbers\n\n"
             "*How It Works:*\n"
             "1. Add me to your group\n"
-            "2. I'll automatically detect phone numbers in messages\n"
-            "3. If a duplicate number is found, I'll notify the group"
+            "2. I'll detect numbers\n"
+            "3. I'll notify on duplicates"
         )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        try:
+            await update.message.reply_text(help_text, parse_mode='Markdown')
+        except Exception as e:
+            # Fallback to plain text if Markdown fails
+            logging.warning(f"Markdown error: {e}")
+            await update.message.reply_text(help_text.replace('*', '').replace('_', ''), parse_mode=None)
     
     async def new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle new chat members event."""
