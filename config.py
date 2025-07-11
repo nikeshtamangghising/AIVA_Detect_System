@@ -18,30 +18,23 @@ class Settings(BaseSettings):
     BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
     
     # Parse ADMIN_IDS from environment variable
-    _admin_ids = os.getenv('ADMIN_IDS', '1')
-    ADMIN_IDS: List[int] = []
+    ADMIN_IDS: List[int] = [1]  # Default to admin ID 1
     
     @validator('ADMIN_IDS', pre=True)
-    def parse_admin_ids(cls, v, values, **kwargs):
+    def parse_admin_ids(cls, v):
         if isinstance(v, str):
-            # Handle empty string case
             if not v.strip():
                 return [1]  # Default to admin ID 1 if empty
-            # Handle single number
             if v.strip().isdigit():
-                return [int(v.strip())]
-            # Handle comma-separated list
+                return [int(v.strip())]  # Single number
+            # Comma-separated list
             return [int(x.strip()) for x in v.split(',') if x.strip().isdigit()]
-        # If it's already a list, return as is
         return v or [1]  # Default to admin ID 1 if invalid
     
     class Config:
+        env_file = '.env'
+        env_file_encoding = 'utf-8'
         case_sensitive = True
-        
-    def __init__(self, **data):
-        # Initialize with default values
-        data['ADMIN_IDS'] = self.parse_admin_ids(self._admin_ids)
-        super().__init__(**data)
     
     # Database
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///aiva_detect.db')
