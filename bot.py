@@ -324,22 +324,35 @@ class AIVABot:
             logger.error(f"Error in self-ping: {e}")
     
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle errors in the telegram.ext application."""
+        """Handle errors in the telegram.ext application with detailed logging."""
+        # Log the full error with traceback
         logger.error("Exception while handling an update:", exc_info=context.error)
         
-        # Log the error
-        error_msg = f"An error occurred: {context.error}"
-        logger.error(error_msg)
+        # Get detailed error information
+        error_type = type(context.error).__name__
+        error_msg = str(context.error) or 'No error message'
+        
+        # Log the error with more context
+        logger.error(f"Error type: {error_type}")
+        logger.error(f"Error message: {error_msg}")
+        
+        # Log the update that caused the error
+        if update:
+            update_dict = update.to_dict() if hasattr(update, 'to_dict') else str(update)
+            logger.error(f"Update that caused the error: {update_dict}")
         
         # Only send error message if it's a message update
         if update and hasattr(update, 'message') and update.message:
             try:
+                # Send a more detailed error message to the user
                 await update.message.reply_text(
-                    "❌ An error occurred while processing your request. "
+                    f"❌ Error ({error_type}): {error_msg[:100]}...\n\n"
                     "The error has been logged and will be investigated."
                 )
             except Exception as e:
                 logger.error(f"Error sending error message: {e}")
+        else:
+            logger.error("No message in update to reply to")
     
 
 
