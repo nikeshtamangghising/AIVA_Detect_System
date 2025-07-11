@@ -202,6 +202,49 @@ class AIVABot:
                 logger.error(f"Failed to send admin message: {e}")
     
     # Payment detection and database methods will be added here
+    async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all watched numbers."""
+        try:
+            with get_db() as db:
+                # Get all non-duplicate records
+                records = db.query(NumberRecord).filter(
+                    NumberRecord.is_duplicate == False
+                ).order_by(NumberRecord.created_at.desc()).all()
+                
+                if not records:
+                    await update.message.reply_text("No numbers in the watchlist yet.")
+                    return
+                
+                # Format the message
+                message = ("📋 *Watched Numbers*\n\n" +
+                         "\n".join(
+                             f"{i+1}. `{record.number}` (ID: {record.id})"
+                             for i, record in enumerate(records)
+                         ) +
+                         "\n\nUse `/remove <ID>` to remove a number from the watchlist.")
+                
+                # Send the message
+                try:
+                    await update.message.reply_text(
+                        message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                except Exception as e:
+                    # Fallback to plain text if markdown fails
+                    logger.warning(f"Markdown error in list_data: {e}")
+                    plain_message = message.replace('*', '').replace('`', '')
+                    await update.message.reply_text(
+                        plain_message,
+                        disable_web_page_preview=True
+                    )
+                    
+        except Exception as e:
+            logger.error(f"Error in list_data: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ An error occurred while fetching the watchlist. Please try again later."
+            )
+    
     async def add_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Add a number to the watchlist."""
         if not context.args:
