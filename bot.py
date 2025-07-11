@@ -54,11 +54,11 @@ class AIVABot:
         # Command handlers
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("status", self.status))
-        
-        # Admin commands
         self.application.add_handler(CommandHandler("number", self.add_number))
+        # Support both /list_data and /listdata
         self.application.add_handler(CommandHandler("list_data", self.list_data))
+        self.application.add_handler(CommandHandler("listdata", self.list_data))  # Alias without underscore
+        self.application.add_handler(CommandHandler("status", self.status))
         
         # Message handler for phone number detection
         self.application.add_handler(MessageHandler(
@@ -424,25 +424,39 @@ async def add_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all watched phone numbers."""
     with get_db() as db:
+        # Get all records and extract needed data while session is active
         records = db.query(PhoneRecord).filter_by(is_duplicate=False).order_by(PhoneRecord.created_at.desc()).all()
-            
-    if not records:
+        
+        # Extract data we need before session closes
+        record_data = []
+        for record in records:
+            record_data.append({
+                'number': record.phone_number,
+                'created_at': record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'Unknown'
+            })
+    
+    if not record_data:
         await update.message.reply_text("No phone numbers in watchlist yet.")
         return
-            
-    # Format message
+    
+    # Format message with proper Markdown escaping
     message = "📱 *Watched Phone Numbers* 📱\n\n"
-        
-    for i, record in enumerate(records[:50], 1):  # Limit to 50 numbers
-        message += f"{i}. `{record.phone_number}`"
-        if record.created_at:
-            message += f" (added {record.created_at.strftime('%Y-%m-%d %H:%M')})"
-        message += "\n"
-                
-    if len(records) > 50:
-        message += f"\n... and {len(records) - 50} more phone numbers"
-            
-    await update.message.reply_text(message, parse_mode='Markdown')
+    
+    for i, record in enumerate(record_data[:50], 1):  # Limit to 50 numbers
+        # Escape Markdown special characters in the phone number
+        safe_number = record['number'].replace('_', '\_').replace('*', '\*').replace('`', '\`')
+        message += f"{i}. `{safe_number}` (added {record['created_at']})\n"
+    
+    if len(record_data) > 50:
+        message += f"\n... and {len(record_data) - 50} more phone numbers"
+    
+    try:
+        await update.message.reply_text(message, parse_mode='Markdown')
+    except Exception as e:
+        # Fallback to plain text if Markdown parsing fails
+        logger.warning(f"Markdown error, falling back to plain text: {e}")
+        plain_message = message.replace('*', '').replace('`', '').replace('_', '')
+        await update.message.reply_text(plain_message)
     
 async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show bot status and uptime."""
