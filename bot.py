@@ -428,29 +428,8 @@ class AIVABot:
                 )
             except Exception as e:
                 logger.error(f"Error sending error message: {e}")
-    error_msg = str(context.error) or 'No error message'
-        
-    # Log the error with more context
-    logger.error(f"Error type: {error_type}")
-    logger.error(f"Error message: {error_msg}")
-        
-    # Log the update that caused the error
-    if update:
-        update_dict = update.to_dict() if hasattr(update, 'to_dict') else str(update)
-        logger.error(f"Update that caused the error: {update_dict}")
-        
-    # Only send error message if it's a message update
-    if update and hasattr(update, 'message') and update.message:
-        try:
-            # Send a more detailed error message to the user
-            await update.message.reply_text(
-                f"❌ Error ({error_type}): {error_msg[:100]}...\n\n"
-                "The error has been logged and will be investigated."
-            )
-        except Exception as e:
-            logger.error(f"Error sending error message: {e}")
-    else:
-        logger.error("No message in update to reply to")
+        else:
+            logger.error("No message in update to reply to")
     
 
 
