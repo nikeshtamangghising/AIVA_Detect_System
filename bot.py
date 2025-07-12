@@ -250,10 +250,13 @@ class AIVABot:
                 db.add(new_record)
                 db.commit()
                 
+                # Escape markdown special characters in the identifier
+                escaped_identifier = identifier.replace('`', '\`').replace('_', '\_').replace('*', '\*').replace('[', '\[')
+                
                 await update.message.reply_text(
-                    f"✅ Successfully added identifier: `{identifier}`\n"
-                    f"Type: {identifier_type.upper() if identifier_type else 'UNKNOWN'}",
-                    parse_mode='Markdown',
+                    f"✅ Successfully added identifier: `{escaped_identifier}`\n"
+                    f"Type: `{identifier_type.upper() if identifier_type else 'UNKNOWN'}`",
+                    parse_mode='MarkdownV2',
                     disable_web_page_preview=True
                 )
                 
