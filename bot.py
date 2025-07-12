@@ -119,48 +119,55 @@ class AIVABot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a welcome message when the command /start is issued."""
         user = update.effective_user
+        first_name = user.first_name.replace('_', '\_').replace('*', '\*').replace('[', '\[').replace('`', '\`')
         welcome_text = (
-            f"👋 Hello {user.first_name}!\n\n"
-            "I'm AIVA Detect Bot. I can help you monitor and detect duplicate identifiers.\n\n"
-            "📋 *Available Commands:*\n"
-            "/add <identifier> - Add an identifier to monitor\n"
-            "/list - List all monitored identifiers\n"
-            "/status - Show bot status\n"
-            "/help - Show this help message"
+            f"👋 *Hello {first_name}*\!\n\n"
+            "I'm *AIVA Detect Bot*\. I can help you monitor and detect duplicate identifiers\.\n\n"
+            "*📋 Available Commands:*\n"
+            "• /add \- Add an identifier to monitor\n"
+            "• /add\_identifier \- Same as /add\n"
+            "• /list \- List all monitored identifiers\n"
+            "• /list\_data \- Same as /list\n"
+            "• /status \- Show bot status\n"
+            "• /help \- Show help message"
         )
         
         if self.is_admin(user.id):
-            welcome_text += "\n\n🔒 *Admin Commands:*\n"
-            welcome_text += "/remove <id> - Remove an identifier (Admin only)\n"
+            welcome_text += "\n\n*🔒 Admin Commands:*\n"
+            welcome_text += "• /remove \<id\> \- Remove an identifier\n"
         
         await update.message.reply_text(
             welcome_text,
-            parse_mode='Markdown',
+            parse_mode='MarkdownV2',
             disable_web_page_preview=True
         )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /help is issued."""
-        user = update.effective_user
         help_text = (
-            "🤖 *AIVA Detect Bot Help*\n\n"
-            "I can help you monitor and detect duplicate identifiers.\n\n"
-            "*Available Commands:*\n"
-            "• /start - Start the bot and show welcome message\n"
-            "• /help - Show this help message\n"
-            "• /add <identifier> - Add any identifier to monitor (text, numbers, codes, etc.)\n"
-            "• /list - List all monitored identifiers\n"
-            "• /status - Show bot status and statistics"
+            "*🤖 AIVA Detect Bot Help*\n\n"
+            "I can help you monitor and detect duplicate identifiers\.\n\n"
+            "*📋 Available Commands:*\n"
+            "• /start \- Show welcome message\n"
+            "• /help \- Show this help message\n"
+            "• /add \<identifier\> \- Add any identifier to monitor \[text, numbers, codes, etc\.\]\n"
+            "• /add\_identifier \<identifier\> \- Same as /add\n"
+            "• /list \- List all monitored identifiers\n"
+            "• /list\_data \- Same as /list\n"
+            "• /status \- Show bot status and statistics"
         )
         
-        # Convert user.id to string for comparison with ADMIN_IDS
+        user = update.effective_user
         if self.is_admin(user.id):
-            help_text += "\n\n*Admin Commands:*\n"
-            help_text += "• /remove <id> - Remove an identifier"
+            help_text += "\n\n*🔒 Admin Commands:*\n"
+            help_text += "• /remove \<id\> \- Remove an identifier\n"
+            help_text += "• /status \- Show detailed bot statistics"
+        
+        help_text += "\n\n*💡 Tip:* The bot will automatically detect duplicates in any message you send, not just when using commands\!"
         
         await update.message.reply_text(
             help_text,
-            parse_mode='Markdown',
+            parse_mode='MarkdownV2',
             disable_web_page_preview=True
         )
 
@@ -352,6 +359,30 @@ class AIVABot:
                 "❌ An error occurred while removing the identifier. Please try again later."
             )
 
+    def extract_identifiers(self, text: str) -> list[str]:
+        """Extract potential identifiers from a message text."""
+        # Remove any URLs to avoid false positives
+        text = re.sub(r'https?://\S+|www\.\S+', '', text)
+        
+        # Split by common separators and filter out short strings
+        separators = r'[\s\n\t\r,;|]+'
+        potential = []
+        
+        # First, check the entire message as-is
+        potential.append(text.strip())
+        
+        # Then check individual parts
+        parts = re.split(separators, text)
+        for part in parts:
+            part = part.strip()
+            # Only consider parts that look like potential identifiers
+            if len(part) >= 6:  # Minimum length to avoid too many false positives
+                potential.append(part)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        return [x for x in potential if not (x in seen or seen.add(x))]
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle any message that contains text but is not a command."""
         if not update.message or not update.message.text:
@@ -366,9 +397,9 @@ class AIVABot:
             
         # Process the message to find potential identifiers
         try:
-            # Simple extraction of potential identifiers (this can be enhanced)
-            # For now, we'll just check the entire message as a potential identifier
-            potential_identifiers = [text]
+            # Extract potential identifiers from the message
+            potential_identifiers = self.extract_identifiers(text)
+            found_duplicates = False
             
             for identifier in potential_identifiers:
                 if not identifier.strip():
@@ -383,14 +414,20 @@ class AIVABot:
                     
                     if existing:
                         # This is a duplicate!
+                        found_duplicates = True
                         await self.handle_duplicate(existing, identifier, message, context.bot, db, context)
+            
+            # If we didn't find any duplicates, log that we processed the message
+            if not found_duplicates:
+                logger.debug(f"Processed message with no duplicates found: {text[:50]}...")
                     
         except Exception as e:
             logger.error(f"Error in handle_message: {e}", exc_info=True)
             try:
                 if update.effective_chat:
                     await update.message.reply_text(
-                        "❌ An error occurred while processing your message. Please try again."
+                        "❌ An error occurred while processing your message\. Please try again\.",
+                        parse_mode='MarkdownV2'
                     )
             except Exception as e2:
                 logger.error(f"Failed to send error message: {e2}")
