@@ -291,13 +291,18 @@ class AIVABot:
                     return
                 
                 # Format the response
-                response = ["📋 *Monitored Identifiers*\n"]
+                response = ["*📋 Monitored Identifiers*\n\n"]
                 for i, record in enumerate(records, 1):
+                    # Escape all dynamic content
+                    escaped_identifier = self.escape_markdown_v2(record.identifier)
+                    escaped_type = self.escape_markdown_v2(record.identifier_type.upper() if record.identifier_type else 'UNKNOWN')
+                    added_date = record.created_at.strftime('%Y\-%m\-%d %H\:%M')
+                    
                     response.append(
-                        f"{i}. `{record.identifier}`\n"
-                        f"   Type: {record.identifier_type.upper() if record.identifier_type else 'UNKNOWN'}\n"
-                        f"   Added: {record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-                        f"   ID: `{record.id}`"
+                        f"{i}\. `{escaped_identifier}`\n"
+                        f"   *Type:* `{escaped_type}`\n"
+                        f"   *Added:* `{added_date}`\n"
+                        f"   *ID:* `{record.id}`"
                     )
                 
                 # Split long messages to avoid hitting Telegram's message length limit
@@ -308,20 +313,21 @@ class AIVABot:
                     for chunk in chunks:
                         await update.message.reply_text(
                             chunk,
-                            parse_mode='Markdown',
+                            parse_mode='MarkdownV2',
                             disable_web_page_preview=True
                         )
                 else:
                     await update.message.reply_text(
                         message,
-                        parse_mode='Markdown',
+                        parse_mode='MarkdownV2',
                         disable_web_page_preview=True
                     )
                         
         except Exception as e:
             logger.error(f"Error in list_identifiers: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while fetching the identifier list. Please try again later."
+                "❌ An error occurred while fetching the identifier list\. Please try again later\.",
+                parse_mode='MarkdownV2'
             )
 
     @admin_only
@@ -358,6 +364,13 @@ class AIVABot:
             await update.message.reply_text(
                 "❌ An error occurred while removing the identifier. Please try again later."
             )
+
+    def escape_markdown_v2(self, text: str) -> str:
+        """Escape special characters for MarkdownV2."""
+        if not text:
+            return ""
+        escape_chars = '_*[]()~`>#+-=|{}.!'
+        return ''.join(f'\{char}' if char in escape_chars else char for char in text)
 
     def extract_identifiers(self, text: str) -> list[str]:
         """Extract potential identifiers from a message text."""
@@ -469,22 +482,28 @@ class AIVABot:
             user = message.from_user if hasattr(message, 'from_user') and message.from_user else None
             username = f"@{user.username}" if user and user.username else (user.first_name if user else "a user")
             
-            # Format the alert message
+            # Escape all dynamic content
+            escaped_identifier = self.escape_markdown_v2(identifier)
+            escaped_type = self.escape_markdown_v2(identifier_type.upper() if identifier_type else 'UNKNOWN')
+            escaped_username = self.escape_markdown_v2(username)
+            first_seen = existing_record.created_at.strftime('%Y\-%m\-%d %H\:%M')
+            
+            # Format the alert message with MarkdownV2
             alert_text = (
-                "🚨 *DUPLICATE IDENTIFIER DETECTED* 🚨\n\n"
-                f"⚠️ *TYPE:* {identifier_type.upper() if identifier_type else 'UNKNOWN'}\n"
-                f"🔑 *Identifier:* `{identifier}`\n"
-                f"📅 *First Seen:* {existing_record.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-                f"👤 *Reported by:* {username}\n\n"
-                "*Please verify this transaction before proceeding!*\n"
-                "_This identifier has been previously processed._"
+                "*🚨 DUPLICATE IDENTIFIER DETECTED 🚨*\n\n"
+                f"⚠️ *TYPE\:* `{escaped_type}`\n"
+                f"🔑 *Identifier\:* `{escaped_identifier}`\n"
+                f"📅 *First Seen\:* `{first_seen}`\n"
+                f"👤 *Reported by\:* {escaped_username}\n\n"
+                "*Please verify this transaction before proceeding\!*\n"
+                "_This identifier has been previously processed\._"
             )
             
             # Try to send the alert as a reply to the original message
             try:
                 await message.reply_text(
                     alert_text,
-                    parse_mode='Markdown',
+                    parse_mode='MarkdownV2',
                     reply_to_message_id=message.message_id if hasattr(message, 'message_id') else None,
                     disable_web_page_preview=True
                 )
@@ -498,16 +517,17 @@ class AIVABot:
                         await bot.send_message(
                             chat_id=chat_id,
                             text=alert_text,
-                            parse_mode='Markdown',
+                            parse_mode='MarkdownV2',
                             disable_web_page_preview=True
                         )
                         logger.info(f"Alert sent for duplicate (fallback): {identifier} in chat_id={chat_id}")
                 except Exception as e2:
                     logger.error(f"Failed to send duplicate alert: {e2}")
-                    # If all else fails, try to notify admins
+                    # If all else fails, try to notify admins with plain text
                     await self.notify_admins(
                         bot,
-                        f"⚠️ Failed to send duplicate alert for identifier {identifier} in chat {chat_id or 'unknown'}: {e2}"
+                        f"⚠️ Failed to send duplicate alert for identifier {escaped_identifier} in chat {chat_id or 'unknown'}: {e2}",
+                        use_markdown=False
                     )
                     
         except Exception as e:
@@ -526,8 +546,14 @@ class AIVABot:
             except Exception as e2:
                 logger.error(f"Failed to send error notification: {e2}")
 
-    async def notify_admins(self, bot, message: str) -> None:
-        """Send a notification to all admin users."""
+    async def notify_admins(self, bot, message: str, use_markdown: bool = True) -> None:
+        """Send a notification to all admin users.
+        
+        Args:
+            bot: The bot instance
+            message: The message to send
+            use_markdown: Whether to parse the message as MarkdownV2
+        """
         if not hasattr(settings, 'admin_ids_list'):
             logger.error("ADMIN_IDS not properly configured in settings")
             return
