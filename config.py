@@ -30,11 +30,6 @@ class Settings(BaseSettings):
         # Comma-separated list
         return [int(x.strip()) for x in self.ADMIN_IDS.split(',') if x.strip().isdigit()] or [1]
     
-    class Config:
-        env_file = '.env'
-        env_file_encoding = 'utf-8'
-        case_sensitive = True
-    
     # Database
     DATABASE_DIR: str = os.getenv('DATABASE_DIR', 'instance')
     DATABASE_FILENAME: str = os.getenv('DATABASE_FILENAME', 'aiva_detect.db')
@@ -52,6 +47,8 @@ class Settings(BaseSettings):
     LOG_FILE: str = 'logs/aiva_bot.log'
     
     class Config:
+        env_file = '.env'
+        env_file_encoding = 'utf-8'
         case_sensitive = True
 
 # Create settings instance

@@ -5,16 +5,18 @@ import aiohttp
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import re
+from functools import wraps
 
-from telegram import Update, Message, User, Chat
+from telegram import Update, Message, User, Chat, BotCommand
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
+    Application, CommandHandler, MessageHandler,
     filters, ContextTypes, JobQueue
 )
 from config import settings
-from database.database import init_db, get_db, SessionLocal as Session
+from database.database import init_db, get_db
 from database.models import IdentifierRecord, DuplicateAlert
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 # Configure logging
 logging.basicConfig(
@@ -23,13 +25,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def admin_only(func):
+    """Decorator to restrict access to admin users only."""
+    @wraps(func)
+    async def wrapped(self: 'AIVABot', update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not update.effective_user or not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ This command is only available to administrators.")
+            return
+        return await func(self, update, context, *args, **kwargs)
+    return wrapped
+
+
 class AIVABot:
     def __init__(self, token: str):
         """Initialize the bot."""
         self.token = token
         self.start_time = datetime.now()
         self.self_ping_url = os.getenv('SELF_PING_URL')
-        self.application = Application.builder().token(token).build()
+        self.application = (
+            Application.builder()
+            .token(token)
+            .post_init(self.post_init)
+            .build()
+        )
         self._setup_handlers()
         logger.info("Bot initialized")
         
@@ -64,12 +83,16 @@ class AIVABot:
             
         logger.info("Bot post-initialization complete")
 
+    def is_admin(self, user_id: int) -> bool:
+        """Check if a user is an admin."""
+        return user_id in settings.admin_ids_list
+
     async def setup_commands(self) -> None:
         """Set up bot commands."""
         commands = [
             BotCommand("start", "Start the bot"),
             BotCommand("help", "Show help information"),
-            BotCommand("number", "Add a number to monitor"),
+            BotCommand("add", "Add an identifier to monitor"),
             BotCommand("list_data", "List all monitored numbers"),
             BotCommand("status", "Show bot status"),
         ]
@@ -80,7 +103,8 @@ class AIVABot:
         # Add command handlers
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("number", self.add_identifier))
+        self.application.add_handler(CommandHandler("add", self.add_identifier))
+        self.application.add_handler(CommandHandler("add_identifier", self.add_identifier))
         self.application.add_handler(CommandHandler("list", self.list_identifiers))
         self.application.add_handler(CommandHandler("list_data", self.list_identifiers))
         self.application.add_handler(CommandHandler("status", self.status))
@@ -99,14 +123,13 @@ class AIVABot:
             f"👋 Hello {user.first_name}!\n\n"
             "I'm AIVA Detect Bot. I can help you monitor and detect duplicate identifiers.\n\n"
             "📋 *Available Commands:*\n"
-            "/number <identifier> - Add an identifier to monitor\n"
+            "/add <identifier> - Add an identifier to monitor\n"
             "/list - List all monitored identifiers\n"
             "/status - Show bot status\n"
             "/help - Show this help message"
         )
         
-        # Convert user.id to string for comparison with ADMIN_IDS
-        if str(user.id) in settings.ADMIN_IDS.split(','):
+        if self.is_admin(user.id):
             welcome_text += "\n\n🔒 *Admin Commands:*\n"
             welcome_text += "/remove <id> - Remove an identifier (Admin only)\n"
         
@@ -125,13 +148,13 @@ class AIVABot:
             "*Available Commands:*\n"
             "• /start - Start the bot and show welcome message\n"
             "• /help - Show this help message\n"
-            "• /number <identifier> - Add any identifier to monitor (text, numbers, codes, etc.)\n"
+            "• /add <identifier> - Add any identifier to monitor (text, numbers, codes, etc.)\n"
             "• /list - List all monitored identifiers\n"
             "• /status - Show bot status and statistics"
         )
         
         # Convert user.id to string for comparison with ADMIN_IDS
-        if str(user.id) in settings.ADMIN_IDS.split(','):
+        if self.is_admin(user.id):
             help_text += "\n\n*Admin Commands:*\n"
             help_text += "• /remove <id> - Remove an identifier"
         
@@ -189,7 +212,7 @@ class AIVABot:
         """Add a new identifier to monitor. Accepts any string value as an identifier."""
         if not context.args:
             await update.message.reply_text(
-                "❌ Please provide an identifier. Example: `/number ABC123` or `/number 9876543210`",
+                "❌ Please provide an identifier. Example: `/add ABC123` or `/add 9876543210`",
                 parse_mode='Markdown'
             )
             return
@@ -291,12 +314,9 @@ class AIVABot:
                 "❌ An error occurred while fetching the identifier list. Please try again later."
             )
 
+    @admin_only
     async def remove_identifier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Remove an identifier from monitoring (admin only)."""
-        if update.effective_user.id not in settings.ADMIN_IDS:
-            await update.message.reply_text("❌ This command is only available to administrators.")
-            return
-            
         if not context.args:
             await update.message.reply_text(
                 "❌ Please provide an ID to remove. Example: `/remove 123`\n"
@@ -681,9 +701,37 @@ async def run_webhook(application, port: int, webhook_url: str, secret_token: st
     while True:
         await asyncio.sleep(3600)  # Sleep for 1 hour
 
+def run_polling_mode(application: Application):
+    """Run the bot in polling mode for development."""
+    logger.info("Starting in POLLING mode")
+    application.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+
+async def run_webhook_mode(application: Application):
+    """Configure and run the bot in webhook mode for production."""
+    port = int(os.getenv('PORT', 10000))
+    webhook_url = os.getenv('WEBHOOK_URL')
+    secret_token = os.getenv('WEBHOOK_SECRET')
+
+    if not secret_token:
+        raise ValueError("WEBHOOK_SECRET environment variable is required in webhook mode")
+
+    if not webhook_url:
+        render_external_url = os.getenv('RENDER_EXTERNAL_URL')
+        if render_external_url:
+            webhook_url = f"{render_external_url}/webhook"
+        else:
+            raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
+    
+    logger.info(f"Starting in WEBHOOK mode on port {port}")
+    logger.info(f"Webhook URL: {webhook_url}")
+    
+    await run_webhook(application, port, webhook_url, secret_token)
+
 def main():
     """Start the bot."""
-    # Initialize database first
     try:
         init_db()
         logger.info("Database initialized")
@@ -691,44 +739,21 @@ def main():
         logger.error(f"Failed to initialize database: {e}")
         raise
     
-    # Get the application
     application = get_application()
     
-    # Always use webhook in production (Render)
     if 'RENDER' in os.environ or os.getenv('WEBHOOK_MODE', '').lower() == 'true':
-        # Webhook mode for production
-        port = int(os.getenv('PORT', 10000))
-        webhook_url = os.getenv('WEBHOOK_URL')
-        secret_token = os.getenv('WEBHOOK_SECRET', 'your-webhook-secret')
-        
-        if not webhook_url:
-            # Try to get webhook URL from Render environment
-            render_external_url = os.getenv('RENDER_EXTERNAL_URL')
-            if render_external_url:
-                webhook_url = f"{render_external_url}/webhook"
-            else:
-                raise ValueError("WEBHOOK_URL environment variable is required in webhook mode")
-        
-        # Log webhook configuration
-        logger.info(f"Starting in WEBHOOK mode on port {port}")
-        logger.info(f"Webhook URL: {webhook_url}")
-        
-        # Start the event loop
         loop = asyncio.get_event_loop()
         try:
-            loop.run_until_complete(run_webhook(application, port, webhook_url, secret_token))
+            loop.run_until_complete(run_webhook_mode(application))
         except KeyboardInterrupt:
             logger.info("Shutting down...")
-            loop.run_until_complete(application.stop())
-            loop.run_until_complete(application.shutdown())
+            # Graceful shutdown
+            if loop.is_running():
+                loop.run_until_complete(application.stop())
+                loop.run_until_complete(application.shutdown())
             loop.close()
     else:
-        # Polling mode for development
-        logger.info("Starting in POLLING mode")
-        application.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        run_polling_mode(application)
 
 
 if __name__ == "__main__":
