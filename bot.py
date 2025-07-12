@@ -48,7 +48,19 @@ class AIVABot:
         # Add job queue for self-ping
         self.job_queue = self.application.job_queue
         if self.job_queue and self.self_ping_url:
-            self.job_queue.run_repeating(self.self_ping, interval=300.0, first=10.0)
+            # Run self-ping every 5 minutes, starting 10 seconds after bot starts
+            self.job_queue.run_repeating(
+                self.self_ping, 
+                interval=300.0,  # 5 minutes
+                first=10.0,      # Start after 10 seconds
+                name="self_ping"
+            )
+            logger.info(f"Self-ping job scheduled with URL: {self.self_ping_url}")
+        else:
+            if not self.self_ping_url:
+                logger.warning("SELF_PING_URL not set, self-ping functionality disabled")
+            if not self.job_queue:
+                logger.error("Job queue not available, self-ping functionality disabled")
             
         logger.info("Bot post-initialization complete")
 
@@ -512,17 +524,37 @@ class AIVABot:
     async def self_ping(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Ping the self-ping URL to keep the bot alive."""
         if not self.self_ping_url:
+            logger.warning("Self-ping URL not configured")
             return
             
+        logger.info(f"Performing self-ping to {self.self_ping_url}")
         try:
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(self.self_ping_url) as response:
-                    if response.status == 200:
-                        logger.debug("Self-ping successful")
+                    status = response.status
+                    text = await response.text()
+                    if status == 200:
+                        logger.info(f"Self-ping successful: {status} - {text[:100]}")
                     else:
-                        logger.warning(f"Self-ping failed with status {response.status}")
+                        logger.warning(f"Self-ping failed with status {status}: {text[:200]}")
+        except asyncio.TimeoutError:
+            logger.error("Self-ping request timed out after 10 seconds")
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error during self-ping: {str(e)}")
         except Exception as e:
-            logger.error(f"Error in self_ping: {e}")
+            logger.error(f"Unexpected error in self_ping: {e}", exc_info=True)
+            # Try to restart the job if it fails
+            try:
+                if self.job_queue:
+                    self.job_queue.run_repeating(
+                        self.self_ping,
+                        interval=300.0,
+                        first=60.0,  # Try again in 1 minute
+                        name="self_ping_retry"
+                    )
+            except Exception as restart_error:
+                logger.error(f"Failed to restart self-ping job: {restart_error}")
 
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle errors in the telegram.ext application with detailed logging."""
@@ -575,6 +607,38 @@ def get_application() -> Application:
     return bot.application
 
 
+async def setup_webhook(application, webhook_url: str, secret_token: str) -> None:
+    """Set up the webhook with the given URL and secret token."""
+    await application.bot.set_webhook(
+        url=webhook_url,
+        secret_token=secret_token,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+    logger.info("Webhook set successfully")
+
+async def run_webhook(application, port: int, webhook_url: str, secret_token: str) -> None:
+    """Run the application in webhook mode."""
+    await application.initialize()
+    await setup_webhook(application, webhook_url, secret_token)
+    await application.start()
+    
+    # Start the webhook server
+    await application.updater.start_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path="",
+        webhook_url=webhook_url,
+        secret_token=secret_token,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+    logger.info("Bot is running in webhook mode")
+    
+    # Keep the application running
+    while True:
+        await asyncio.sleep(3600)  # Sleep for 1 hour
+
 def main():
     """Start the bot."""
     # Initialize database first
@@ -607,40 +671,10 @@ def main():
         logger.info(f"Starting in WEBHOOK mode on port {port}")
         logger.info(f"Webhook URL: {webhook_url}")
         
-        # Set webhook
-        async def set_webhook():
-            await application.bot.set_webhook(
-                url=f"{webhook_url}",
-                secret_token=secret_token,
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
-            logger.info("Webhook set successfully")
-        
-        # Run the application with webhook
-        async def run_webhook():
-            await application.initialize()
-            await set_webhook()
-            await application.start()
-            await application.updater.start_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path="",
-                webhook_url=webhook_url,
-                secret_token=secret_token,
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
-            logger.info("Bot is running in webhook mode")
-            
-            # Keep the application running
-            while True:
-                await asyncio.sleep(3600)  # Sleep for 1 hour
-        
         # Start the event loop
         loop = asyncio.get_event_loop()
         try:
-            loop.run_until_complete(run_webhook())
+            loop.run_until_complete(run_webhook(application, port, webhook_url, secret_token))
         except KeyboardInterrupt:
             logger.info("Shutting down...")
             loop.run_until_complete(application.stop())

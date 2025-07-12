@@ -3,7 +3,7 @@ services:
     name: aiva-detect-bot
     env: python
     region: singapore  # Choose a region closest to your users
-    plan: free  # Or 'standard' for production
+    plan: standard  # Changed to standard for 24/7 operation
     buildCommand: |
       pip install -r requirements.txt
       python -c "from database.database import Base, engine; Base.metadata.create_all(bind=engine)"
@@ -20,13 +20,12 @@ services:
       - key: DATABASE_URL
         value: sqlite:///data/aiva_detect.db
       - key: LOG_LEVEL
-        value: DEBUG
+        value: INFO  # Changed from DEBUG to reduce log noise
       - key: ADMIN_IDS
         value: ""  # Set your admin Telegram IDs here, comma-separated
-      - key: WEBHOOK_SECRET
-        generateValue: true
       - key: PORT
         value: 10000
+      - key: WEBHOOK_URL
         fromService:
           type: secret
           name: WEBHOOK_URL
@@ -34,4 +33,33 @@ services:
         fromService:
           type: secret
           name: WEBHOOK_SECRET
-    plan: free
+      - key: SELF_PING_URL
+        fromService:
+          type: secret
+          name: WEBHOOK_URL
+    healthCheckPath: /health
+    autoDeploy: true
+    numInstances: 1
+    resources:
+      cpu: 1.0
+      memory: 1GB
+    disk:
+      name: aiva-detect-data
+      mountPath: /data
+      sizeGB: 1
+    env: python
+    python:
+      version: 3.10.0
+    build:
+      args:
+        PYTHON_VERSION: 3.10.0
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      python -c "from database.database import Base, engine; Base.metadata.create_all(bind=engine)"
+    startCommand: python bot.py
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "true"
+      - key: PYTHONHASHSEED
+        value: "42"
