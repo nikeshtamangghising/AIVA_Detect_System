@@ -119,28 +119,33 @@ class AIVABot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a welcome message when the command /start is issued."""
         user = update.effective_user
-        first_name = user.first_name.replace('_', '\_').replace('*', '\*').replace('[', '\[').replace('`', '\`')
+        first_name = self.escape_markdown_v2(user.first_name)
+        
         welcome_text = (
-            f"👋 *Hello {first_name}*\!\n\n"
-            "I'm *AIVA Detect Bot*\. I can help you monitor and detect duplicate identifiers\.\n\n"
-            "*📋 Available Commands:*\n"
-            "• /add \- Add an identifier to monitor\n"
-            "• /add\_identifier \- Same as /add\n"
-            "• /list \- List all monitored identifiers\n"
-            "• /list\_data \- Same as /list\n"
-            "• /status \- Show bot status\n"
-            "• /help \- Show help message"
+            fr"👋 *Hello {first_name}*\!\n\n"
+            r"I'm *AIVA Detect Bot*\. I can help you monitor and detect duplicate identifiers\.\n\n"
+            r"*Available commands:*\n"
+            r"• /add \- Add an identifier to monitor\n"
+            r"• /add\_identifier \- Same as /add\n"
+            r"• /list \- List all monitored identifiers\n"
+            r"• /list\_data \- Same as /list\n"
+            r"• /status \- Show bot status\n"
+            r"• /help \- Show help message"
         )
         
+        # Add admin-only commands if user is admin
         if self.is_admin(user.id):
-            welcome_text += "\n\n*🔒 Admin Commands:*\n"
-            welcome_text += "• /remove \<id\> \- Remove an identifier\n"
-        
+            welcome_text += r"\n\n*Admin commands:*\n"
+            welcome_text += r"• /remove \<id\> \- Remove an identifier\n"
+            welcome_text += r"• /status \- Show detailed bot statistics"
+            
         await update.message.reply_text(
             welcome_text,
             parse_mode='MarkdownV2',
             disable_web_page_preview=True
         )
+        
+        logger.info(f"Start command received from user {user.id} ({user.username or user.first_name})")
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /help is issued."""
@@ -148,22 +153,22 @@ class AIVABot:
             "*🤖 AIVA Detect Bot Help*\n\n"
             "I can help you monitor and detect duplicate identifiers\.\n\n"
             "*📋 Available Commands:*\n"
-            "• /start \- Show welcome message\n"
-            "• /help \- Show this help message\n"
-            "• /add \<identifier\> \- Add any identifier to monitor \[text, numbers, codes, etc\.\]\n"
-            "• /add\_identifier \<identifier\> \- Same as /add\n"
-            "• /list \- List all monitored identifiers\n"
-            "• /list\_data \- Same as /list\n"
-            "• /status \- Show bot status and statistics"
+            r"• /start \- Show welcome message\n"
+            r"• /help \- Show this help message\n"
+            r"• /add \<identifier\> \- Add any identifier to monitor \[text, numbers, codes, etc\.\]\n"
+            r"• /add\_identifier \<identifier\> \- Same as /add\n"
+            r"• /list \- List all monitored identifiers\n"
+            r"• /list\_data \- Same as /list\n"
+            r"• /status \- Show bot status and statistics"
         )
         
         user = update.effective_user
         if self.is_admin(user.id):
-            help_text += "\n\n*🔒 Admin Commands:*\n"
-            help_text += "• /remove \<id\> \- Remove an identifier\n"
-            help_text += "• /status \- Show detailed bot statistics"
+            help_text += r"\n\n*Admin commands:*\n"
+            help_text += r"• /remove \<id\> \- Remove an identifier\n"
+            help_text += r"• /status \- Show detailed bot statistics"
         
-        help_text += "\n\n*💡 Tip:* The bot will automatically detect duplicates in any message you send, not just when using commands\!"
+        help_text += r"\n\n*💡 Tip:* The bot will automatically detect duplicates in any message you send, not just when using commands\!"
         
         await update.message.reply_text(
             help_text,
@@ -219,14 +224,14 @@ class AIVABot:
         """Add a new identifier to monitor. Accepts any string value as an identifier."""
         if not context.args:
             await update.message.reply_text(
-                "❌ Please provide an identifier. Example: `/add ABC123` or `/add 9876543210`",
+                r"❌ Please provide an identifier. Example: `/add ABC123` or `/add 9876543210`",
                 parse_mode='Markdown'
             )
             return
             
         identifier = ' '.join(context.args).strip()
         if not identifier:
-            await update.message.reply_text("❌ Identifier cannot be empty.")
+            await update.message.reply_text(r"❌ Identifier cannot be empty.")
             return
             
         # No need to validate format - accept any string
@@ -242,7 +247,7 @@ class AIVABot:
                 
                 if existing:
                     await update.message.reply_text(
-                        f"⚠️ This identifier is already being monitored."
+                        r"⚠️ This identifier is already being monitored."
                     )
                     return
                 
@@ -258,11 +263,11 @@ class AIVABot:
                 db.commit()
                 
                 # Escape markdown special characters in the identifier
-                escaped_identifier = identifier.replace('`', '\`').replace('_', '\_').replace('*', '\*').replace('[', '\[')
+                escaped_identifier = self.escape_markdown_v2(identifier)
                 
                 await update.message.reply_text(
-                    f"✅ Successfully added identifier: `{escaped_identifier}`\n"
-                    f"Type: `{identifier_type.upper() if identifier_type else 'UNKNOWN'}`",
+                    fr"✅ Successfully added identifier: `{escaped_identifier}`\n"
+                    fr"Type: `{identifier_type.upper() if identifier_type else 'UNKNOWN'}`",
                     parse_mode='MarkdownV2',
                     disable_web_page_preview=True
                 )
@@ -273,7 +278,7 @@ class AIVABot:
         except Exception as e:
             logger.error(f"Error in add_identifier: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while adding the identifier. Please try again later.",
+                r"❌ An error occurred while adding the identifier. Please try again later.",
                 parse_mode='Markdown'
             )
 
@@ -291,18 +296,18 @@ class AIVABot:
                     return
                 
                 # Format the response
-                response = ["*📋 Monitored Identifiers*\n\n"]
+                response = [r"*📋 Monitored Identifiers*\n\n"]
                 for i, record in enumerate(records, 1):
                     # Escape all dynamic content
                     escaped_identifier = self.escape_markdown_v2(record.identifier)
                     escaped_type = self.escape_markdown_v2(record.identifier_type.upper() if record.identifier_type else 'UNKNOWN')
-                    added_date = record.created_at.strftime('%Y\-%m\-%d %H\:%M')
+                    added_date = record.created_at.strftime('%Y-%m-%d %H:%M')
                     
                     response.append(
-                        f"{i}\. `{escaped_identifier}`\n"
-                        f"   *Type:* `{escaped_type}`\n"
-                        f"   *Added:* `{added_date}`\n"
-                        f"   *ID:* `{record.id}`"
+                        fr"{i}\. `{escaped_identifier}`\n"
+                        fr"   *Type:* `{escaped_type}`\n"
+                        fr"   *Added:* `{added_date}`\n"
+                        fr"   *ID:* `{record.id}`"
                     )
                 
                 # Split long messages to avoid hitting Telegram's message length limit
@@ -326,7 +331,7 @@ class AIVABot:
         except Exception as e:
             logger.error(f"Error in list_identifiers: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while fetching the identifier list\. Please try again later\.",
+                r"❌ An error occurred while fetching the identifier list\. Please try again later\.",
                 parse_mode='MarkdownV2'
             )
 
@@ -335,8 +340,8 @@ class AIVABot:
         """Remove an identifier from monitoring (admin only)."""
         if not context.args:
             await update.message.reply_text(
-                "❌ Please provide an ID to remove. Example: `/remove 123`\n"
-                "Use `/list` to see all identifiers and their IDs.",
+                r"❌ Please provide an ID to remove. Example: `/remove 123`\n"
+                r"Use `/list` to see all identifiers and their IDs.",
                 parse_mode='Markdown'
             )
             return
@@ -350,26 +355,28 @@ class AIVABot:
                     db.delete(record)
                     db.commit()
                     await update.message.reply_text(
-                        f"✅ Successfully removed identifier: `{record.identifier}`",
+                        fr"✅ Successfully removed identifier: `{record.identifier}`",
                         parse_mode='Markdown'
                     )
                     logger.info(f"Identifier {record_id} removed by admin {update.effective_user.id}")
                 else:
-                    await update.message.reply_text("❌ No identifier found with that ID.")
+                    await update.message.reply_text(r"❌ No identifier found with that ID.")
                     
         except ValueError:
-            await update.message.reply_text("❌ Invalid ID format. Please provide a numeric ID.")
+            await update.message.reply_text(r"❌ Invalid ID format. Please provide a numeric ID.")
         except Exception as e:
             logger.error(f"Error in remove_identifier: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while removing the identifier. Please try again later."
+                r"❌ An error occurred while removing the identifier. Please try again later."
             )
 
     def escape_markdown_v2(self, text: str) -> str:
         """Escape special characters for MarkdownV2."""
         if not text:
             return ""
-        escape_chars = '_*[]()~`>#+-=|{}.!'
+        # Define all special characters that need to be escaped in MarkdownV2
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        # Use a list comprehension to build the escaped string
         return ''.join(f'\{char}' if char in escape_chars else char for char in text)
 
     def extract_identifiers(self, text: str) -> list[str]:
@@ -398,18 +405,17 @@ class AIVABot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle any message that contains text but is not a command."""
-        if not update.message or not update.message.text:
-            return
-            
-        message = update.message
-        text = message.text.strip()
-        
-        # Skip messages that start with a command
-        if text.startswith('/'):
-            return
-            
-        # Process the message to find potential identifiers
         try:
+            message = update.message
+            if not message or not message.text:
+                return
+                
+            text = message.text.strip()
+            
+            # Ignore commands (they're handled by command handlers)
+            if text.startswith('/'):
+                return
+                
             # Extract potential identifiers from the message
             potential_identifiers = self.extract_identifiers(text)
             found_duplicates = False
@@ -439,7 +445,7 @@ class AIVABot:
             try:
                 if update.effective_chat:
                     await update.message.reply_text(
-                        "❌ An error occurred while processing your message\. Please try again\.",
+                        r"❌ An error occurred while processing your message\. Please try again\.",
                         parse_mode='MarkdownV2'
                     )
             except Exception as e2:
@@ -486,17 +492,17 @@ class AIVABot:
             escaped_identifier = self.escape_markdown_v2(identifier)
             escaped_type = self.escape_markdown_v2(identifier_type.upper() if identifier_type else 'UNKNOWN')
             escaped_username = self.escape_markdown_v2(username)
-            first_seen = existing_record.created_at.strftime('%Y\-%m\-%d %H\:%M')
+            first_seen = existing_record.created_at.strftime('%Y-%m-%d %H:%M')
             
             # Format the alert message with MarkdownV2
             alert_text = (
-                "*🚨 DUPLICATE IDENTIFIER DETECTED 🚨*\n\n"
-                f"⚠️ *TYPE\:* `{escaped_type}`\n"
-                f"🔑 *Identifier\:* `{escaped_identifier}`\n"
-                f"📅 *First Seen\:* `{first_seen}`\n"
-                f"👤 *Reported by\:* {escaped_username}\n\n"
-                "*Please verify this transaction before proceeding\!*\n"
-                "_This identifier has been previously processed\._"
+                r"*🚨 DUPLICATE IDENTIFIER DETECTED 🚨*\n\n"
+                fr"⚠️ *TYPE\:* `{escaped_type}`\n"
+                fr"🔑 *Identifier\:* `{escaped_identifier}`\n"
+                fr"📅 *First Seen\:* `{first_seen}`\n"
+                fr"👤 *Reported by\:* {escaped_username}\n\n"
+                r"*Please verify this transaction before proceeding\!*\n"
+                r"_This identifier has been previously processed\._"
             )
             
             # Try to send the alert as a reply to the original message
