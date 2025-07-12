@@ -105,7 +105,8 @@ class AIVABot:
             "/help - Show this help message"
         )
         
-        if user.id in settings.ADMIN_IDS:
+        # Convert user.id to string for comparison with ADMIN_IDS
+        if str(user.id) in settings.ADMIN_IDS.split(','):
             welcome_text += "\n\n🔒 *Admin Commands:*\n"
             welcome_text += "/remove <id> - Remove an identifier (Admin only)\n"
         
@@ -117,6 +118,7 @@ class AIVABot:
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send a message when the command /help is issued."""
+        user = update.effective_user
         help_text = (
             "🤖 *AIVA Detect Bot Help*\n\n"
             "I can help you monitor and detect duplicate identifiers.\n\n"
@@ -128,7 +130,8 @@ class AIVABot:
             "• /status - Show bot status and statistics"
         )
         
-        if update.effective_user.id in settings.ADMIN_IDS:
+        # Convert user.id to string for comparison with ADMIN_IDS
+        if str(user.id) in settings.ADMIN_IDS.split(','):
             help_text += "\n\n*Admin Commands:*\n"
             help_text += "• /remove <id> - Remove an identifier"
         
@@ -568,33 +571,46 @@ class AIVABot:
         error_info = {
             'error': str(context.error),
             'error_type': context.error.__class__.__name__,
-            'update': str(update),
-            'user_data': str(context.user_data),
-            'chat_data': str(context.chat_data)
+            'update': str(update)[:500] if update else 'None',  # Limit length
+            'user_data': str(context.user_data)[:200] if context.user_data else '{}',
+            'chat_data': str(context.chat_data)[:200] if context.chat_data else '{}'
         }
         
-        logger.error(f"Error details: {error_info}")
+        logger.error(f"Error context: {error_info}")
         
-        # Try to notify the user about the error if we have a chat context
         try:
-            if update and hasattr(update, 'effective_chat') and update.effective_chat:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="❌ An error occurred while processing your request. The admin has been notified."
+            # Try to reply to the message that caused the error
+            if update and hasattr(update, 'message') and update.message:
+                await update.message.reply_text(
+                    text="❌ An error occurred while processing your request. The admin has been notified.",
+                    parse_mode='Markdown'
                 )
                 
             # Notify all admins about the error
             admin_message = (
-                "⚠️ *Error in bot*\n\n"
-                f"*Error:* {context.error.__class__.__name__}\n"
-                f"*Details:* {str(context.error)}\n\n"
-                f"*Update:* {str(update)[:200]}..."
+                "⚠️ *Bot Error* ⚠️\n\n"
+                f"*Type:* {context.error.__class__.__name__}\n"
+                f"*Error:* {str(context.error)[:200]}"
             )
+            
+            # Truncate the update info to avoid message too long errors
+            if update:
+                update_info = str(update)[:150]
+                if len(str(update)) > 150:
+                    update_info += '...'
+                admin_message += f"\n\n*Update:* `{update_info}`"
             
             await self.notify_admins(context.bot, admin_message)
             
         except Exception as e:
             logger.error(f"Error in error handler while notifying: {e}")
+            # Try to log the original error at least
+            try:
+                logger.error(f"Original error: {str(context.error)}")
+                if update:
+                    logger.error(f"Update that caused error: {str(update)[:500]}")
+            except Exception as log_err:
+                logger.error(f"Failed to log error details: {log_err}")
 
 
 def get_application() -> Application:
