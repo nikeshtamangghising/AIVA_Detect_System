@@ -496,13 +496,13 @@ class AIVABot:
             
             # Format the alert message with MarkdownV2
             alert_text = (
-                r"*🚨 DUPLICATE IDENTIFIER DETECTED 🚨*\n\n"
-                fr"⚠️ *TYPE\:* `{escaped_type}`\n"
-                fr"🔑 *Identifier\:* `{escaped_identifier}`\n"
-                fr"📅 *First Seen\:* `{first_seen}`\n"
-                fr"👤 *Reported by\:* {escaped_username}\n\n"
-                r"*Please verify this transaction before proceeding\!*\n"
-                r"_This identifier has been previously processed\._"
+                "*🚨 DUPLICATE IDENTIFIER DETECTED 🚨*\n\n"
+                f"⚠️ *TYPE\:* `{escaped_type}`\n"
+                f"🔑 *Identifier\:* `{escaped_identifier}`\n"
+                f"📅 *First Seen\:* `{first_seen}`\n"
+                f"👤 *Reported by\:* {escaped_username}\n\n"
+                "*Please verify this transaction before proceeding\!*\n"
+                "_This identifier has been previously processed\._"
             )
             
             # Try to send the alert as a reply to the original message
