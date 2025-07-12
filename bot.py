@@ -125,7 +125,7 @@ class AIVABot:
             "*Available Commands:*\n"
             "• /start - Start the bot and show welcome message\n"
             "• /help - Show this help message\n"
-            "• /number <identifier> - Add an identifier to monitor\n"
+            "• /number <identifier> - Add any identifier to monitor (text, numbers, codes, etc.)\n"
             "• /list - List all monitored identifiers\n"
             "• /status - Show bot status and statistics"
         )
@@ -142,31 +142,54 @@ class AIVABot:
         )
 
     def determine_identifier_type(self, identifier: str) -> str:
-        """Determine the type of identifier based on its format."""
-        # Simple check for email
-        if '@' in identifier and '.' in identifier.split('@')[-1]:
+        """
+        Determine the type of identifier based on its format.
+        Returns a string describing the identifier type.
+        """
+        # Remove any whitespace for type detection
+        clean_identifier = ''.join(identifier.split())
+        
+        # Check for empty string
+        if not clean_identifier:
+            return 'unknown'
+            
+        # Check for email
+        if '@' in clean_identifier and '.' in clean_identifier.split('@')[-1]:
             return 'email'
             
-        # Check for potential phone number (digits only, 8-15 digits)
-        if identifier.isdigit() and 8 <= len(identifier) <= 15:
-            return 'phone'
+        # Check if it's all digits (could be phone, account number, etc.)
+        if clean_identifier.isdigit():
+            length = len(clean_identifier)
+            if 8 <= length <= 15:
+                return 'phone'
+            elif 16 <= length <= 20:
+                return 'account_number'
+            elif length > 20:
+                return 'large_number'
+            return 'numeric'
             
-        # Check for potential bank account number (usually 9-18 digits)
-        if identifier.isdigit() and 9 <= len(identifier) <= 18:
-            return 'bank_account'
+        # Check for alphanumeric with special characters (common in reference codes)
+        if any(c.isalnum() for c in clean_identifier):
+            # If it contains both letters and numbers, it's likely a reference code
+            if any(c.isalpha() for c in clean_identifier) and any(c.isdigit() for c in clean_identifier):
+                return 'reference_code'
+            # If it's just letters, it's a text identifier
+            elif clean_identifier.isalpha():
+                return 'text'
+                
+        # Check for UUID format
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        if re.match(uuid_pattern, clean_identifier.lower()):
+            return 'uuid'
             
-        # Check for potential reference code (alphanumeric with dashes/underscores)
-        if any(c.isalpha() for c in identifier) and any(c.isdigit() for c in identifier):
-            return 'reference_code'
-            
-        # Default to 'other' for anything that doesn't match above patterns
-        return 'other'
+        # Default to 'custom' for anything that doesn't match above patterns
+        return 'custom'
 
     async def add_identifier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Add a new identifier to monitor."""
+        """Add a new identifier to monitor. Accepts any string value as an identifier."""
         if not context.args:
             await update.message.reply_text(
-                "❌ Please provide an identifier. Example: `/number 1234567890`",
+                "❌ Please provide an identifier. Example: `/number ABC123` or `/number 9876543210`",
                 parse_mode='Markdown'
             )
             return
@@ -176,6 +199,7 @@ class AIVABot:
             await update.message.reply_text("❌ Identifier cannot be empty.")
             return
             
+        # No need to validate format - accept any string
         identifier_type = self.determine_identifier_type(identifier)
         
         try:
@@ -206,7 +230,8 @@ class AIVABot:
                 await update.message.reply_text(
                     f"✅ Successfully added identifier: `{identifier}`\n"
                     f"Type: {identifier_type.upper() if identifier_type else 'UNKNOWN'}",
-                    parse_mode='Markdown'
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
                 )
                 
                 # Log the addition
@@ -215,7 +240,8 @@ class AIVABot:
         except Exception as e:
             logger.error(f"Error in add_identifier: {e}", exc_info=True)
             await update.message.reply_text(
-                "❌ An error occurred while adding the identifier. Please try again later."
+                "❌ An error occurred while adding the identifier. Please try again later.",
+                parse_mode='Markdown'
             )
 
     async def list_identifiers(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
